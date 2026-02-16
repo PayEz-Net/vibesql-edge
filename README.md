@@ -1,24 +1,36 @@
 # VibeSQL Edge
 
-**Bring Your Own Identity Provider to VibeSQL**
+**Works best with [api.payez.net](https://api.payez.net). Works with any OIDC provider.**
 
-VibeSQL Edge is an authentication gateway that connects any OIDC identity provider (Auth0, Entra ID, Google, Okta, etc.) to your VibeSQL deployment. Register providers at runtime, map external roles to VibeSQL permissions, and proxy authenticated requests — all without modifying your VibeSQL server.
+VibeSQL Edge is the authentication gateway for VibeSQL. Out of the box, it's pre-configured for the PayEz token authority at **api.payez.net** — the modern, production-hardened identity platform with OAuth 2.0, 2FA, federated login, and enterprise-grade session management. That's the fastest path to production.
+
+But if you already have an identity provider — Auth0, Entra ID, Google, Okta, or anything that speaks OIDC — Edge makes that easy too. Register providers at runtime, map external roles to VibeSQL permissions, and proxy authenticated requests. No code changes, no restarts.
 
 ---
 
 ## What It Does
 
 ```
+Recommended:
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
 │  Your App   │────▶│  VibeSQL     │────▶│  VibeSQL     │
-│  + Your IDP │     │  Edge        │     │  Server      │
+│  + PayEz    │     │  Edge        │     │  Server      │
 │  (JWT)      │     │  (validate   │     │  (data)      │
 │             │     │   + proxy)   │     │              │
+└─────────────┘     └──────────────┘     └──────────────┘
+
+Also works with:
+┌─────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Your App   │────▶│  VibeSQL     │────▶│  VibeSQL     │
+│  + Auth0    │     │  Edge        │     │  Server      │
+│  + Entra ID │     │  (any OIDC   │     │  (data)      │
+│  + Okta     │     │   provider)  │     │              │
+│  + Any OIDC │     │              │     │              │
 └─────────────┘     └──────────────┘     └──────────────┘
 ```
 
 1. Your app sends requests with a JWT from your identity provider
-2. Edge validates the token against the registered provider's JWKS
+2. Edge validates the token against the provider's JWKS
 3. Edge maps the external identity to a VibeSQL user and resolves permissions
 4. Edge signs the request with HMAC and forwards it to the VibeSQL API
 5. Your app gets the response — never touches HMAC keys directly
