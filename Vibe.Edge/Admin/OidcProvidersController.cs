@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Vibe.Edge.Authentication;
 using Vibe.Edge.Data;
 using Vibe.Edge.Data.Models;
@@ -12,6 +13,7 @@ namespace Vibe.Edge.Admin;
 [Route("v1/admin/oidc-providers")]
 [Authorize]
 [RequireAdminPermission]
+[EnableRateLimiting("admin")]
 public class OidcProvidersController : ControllerBase
 {
     private readonly VibeDataService _dataService;

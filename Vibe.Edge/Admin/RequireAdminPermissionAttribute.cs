@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Vibe.Edge.Authorization;
@@ -12,6 +13,12 @@ public class RequireAdminPermissionAttribute : Attribute, IAsyncActionFilter
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         var httpContext = context.HttpContext;
+
+        if (ValidateAdminApiKey(httpContext))
+        {
+            await next();
+            return;
+        }
 
         if (httpContext.User.Identity?.IsAuthenticated != true)
         {
@@ -47,5 +54,25 @@ public class RequireAdminPermissionAttribute : Attribute, IAsyncActionFilter
         }
 
         await next();
+    }
+
+    private static bool ValidateAdminApiKey(HttpContext httpContext)
+    {
+        var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
+        var configuredKey = config["VibeEdge:AdminApiKey"];
+
+        if (string.IsNullOrEmpty(configuredKey))
+            return false;
+
+        if (!httpContext.Request.Headers.TryGetValue("X-Edge-Admin-Key", out var headerValue))
+            return false;
+
+        var provided = headerValue.FirstOrDefault();
+        if (string.IsNullOrEmpty(provided))
+            return false;
+
+        return CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.UTF8.GetBytes(configuredKey),
+            System.Text.Encoding.UTF8.GetBytes(provided));
     }
 }

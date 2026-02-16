@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Vibe.Edge.Credentials;
 using Vibe.Edge.Data;
 using Vibe.Edge.Models;
@@ -9,6 +10,7 @@ namespace Vibe.Edge.Proxy;
 
 [ApiController]
 [Authorize]
+[EnableRateLimiting("proxy")]
 public class ProxyController : ControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;

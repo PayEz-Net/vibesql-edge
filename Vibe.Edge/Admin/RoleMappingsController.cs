@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Vibe.Edge.Data;
 using Vibe.Edge.Data.Models;
 using Vibe.Edge.Models;
@@ -10,6 +11,7 @@ namespace Vibe.Edge.Admin;
 [Route("v1/admin/oidc-providers/{key}/roles")]
 [Authorize]
 [RequireAdminPermission]
+[EnableRateLimiting("admin")]
 public class RoleMappingsController : ControllerBase
 {
     private readonly VibeDataService _dataService;

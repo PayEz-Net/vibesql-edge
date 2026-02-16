@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Vibe.Edge.Data;
 using Vibe.Edge.Models;
 
@@ -9,6 +10,7 @@ namespace Vibe.Edge.Admin;
 [Route("v1/admin/federated-identities")]
 [Authorize]
 [RequireAdminPermission]
+[EnableRateLimiting("admin")]
 public class FederatedIdentitiesController : ControllerBase
 {
     private readonly VibeDataService _dataService;

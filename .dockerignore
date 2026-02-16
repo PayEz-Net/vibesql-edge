@@ -1,0 +1,13 @@
+**/.git
+**/.vs
+**/.vscode
+**/.idea
+**/bin
+**/obj
+**/node_modules
+**/.zenflow
+Tests/
+*.md
+LICENSE
+.gitignore
+.dockerignore
