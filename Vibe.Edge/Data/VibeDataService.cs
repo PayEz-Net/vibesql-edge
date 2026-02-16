@@ -496,7 +496,6 @@ public class VibeDataService
 
         await conn.ExecuteAsync("""
             UPDATE vibe_system.edge_client_credentials SET
-                signing_key = @SigningKey,
                 display_name = @DisplayName,
                 is_active = @IsActive,
                 updated_at = NOW()
