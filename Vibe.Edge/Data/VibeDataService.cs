@@ -166,12 +166,17 @@ public class VibeDataService
 
     public async Task<OidcProvider?> UpdateProviderAsync(string providerKey, Action<OidcProvider> applyUpdates)
     {
-        var existing = await GetProviderByKeyAsync(providerKey);
+        using var conn = CreateConnection();
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+
+        var existing = await conn.QuerySingleOrDefaultAsync<OidcProvider>(
+            "SELECT * FROM vibe_system.oidc_providers WHERE provider_key = @ProviderKey FOR UPDATE",
+            new { ProviderKey = providerKey }, tx);
         if (existing == null) return null;
 
         applyUpdates(existing);
 
-        using var conn = CreateConnection();
         await conn.ExecuteAsync("""
             UPDATE vibe_system.oidc_providers SET
                 display_name = @DisplayName,
@@ -185,9 +190,13 @@ public class VibeDataService
                 clock_skew_seconds = @ClockSkewSeconds,
                 updated_at = NOW()
             WHERE provider_key = @ProviderKey
-            """, existing);
+            """, existing, tx);
 
-        return await GetProviderByKeyAsync(providerKey);
+        tx.Commit();
+
+        return await conn.QuerySingleOrDefaultAsync<OidcProvider>(
+            "SELECT * FROM vibe_system.oidc_providers WHERE provider_key = @ProviderKey",
+            new { ProviderKey = providerKey });
     }
 
     public async Task<bool> DisableProviderAsync(string providerKey)
@@ -253,12 +262,17 @@ public class VibeDataService
 
     public async Task<OidcProviderRoleMapping?> UpdateRoleMappingAsync(int id, Action<OidcProviderRoleMapping> applyUpdates)
     {
-        var existing = await GetRoleMappingByIdAsync(id);
+        using var conn = CreateConnection();
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+
+        var existing = await conn.QuerySingleOrDefaultAsync<OidcProviderRoleMapping>(
+            "SELECT * FROM vibe_system.oidc_provider_role_mappings WHERE id = @Id FOR UPDATE",
+            new { Id = id }, tx);
         if (existing == null) return null;
 
         applyUpdates(existing);
 
-        using var conn = CreateConnection();
         await conn.ExecuteAsync("""
             UPDATE vibe_system.oidc_provider_role_mappings SET
                 vibe_permission = @VibePermission,
@@ -266,9 +280,13 @@ public class VibeDataService
                 allowed_collections = @AllowedCollections,
                 description = @Description
             WHERE id = @Id
-            """, existing);
+            """, existing, tx);
 
-        return await GetRoleMappingByIdAsync(id);
+        tx.Commit();
+
+        return await conn.QuerySingleOrDefaultAsync<OidcProviderRoleMapping>(
+            "SELECT * FROM vibe_system.oidc_provider_role_mappings WHERE id = @Id",
+            new { Id = id });
     }
 
     public async Task<bool> DeleteRoleMappingAsync(int id)
@@ -324,21 +342,30 @@ public class VibeDataService
 
     public async Task<OidcProviderClientMapping?> UpdateClientMappingAsync(int id, Action<OidcProviderClientMapping> applyUpdates)
     {
-        var existing = await GetClientMappingByIdAsync(id);
+        using var conn = CreateConnection();
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+
+        var existing = await conn.QuerySingleOrDefaultAsync<OidcProviderClientMapping>(
+            "SELECT * FROM vibe_system.oidc_provider_client_mappings WHERE id = @Id FOR UPDATE",
+            new { Id = id }, tx);
         if (existing == null) return null;
 
         applyUpdates(existing);
 
-        using var conn = CreateConnection();
         await conn.ExecuteAsync("""
             UPDATE vibe_system.oidc_provider_client_mappings SET
                 vibe_client_id = @VibeClientId,
                 is_active = @IsActive,
                 max_permission = @MaxPermission
             WHERE id = @Id
-            """, existing);
+            """, existing, tx);
 
-        return await GetClientMappingByIdAsync(id);
+        tx.Commit();
+
+        return await conn.QuerySingleOrDefaultAsync<OidcProviderClientMapping>(
+            "SELECT * FROM vibe_system.oidc_provider_client_mappings WHERE id = @Id",
+            new { Id = id });
     }
 
     public async Task<bool> DeleteClientMappingAsync(int id)
@@ -354,9 +381,15 @@ public class VibeDataService
 
     #region FederatedIdentities
 
-    public async Task<IEnumerable<FederatedIdentity>> GetFederatedIdentitiesAsync(int limit = 100, int offset = 0)
+    public async Task<IEnumerable<FederatedIdentity>> GetFederatedIdentitiesAsync(int limit = 100, int offset = 0, string? providerKey = null)
     {
         using var conn = CreateConnection();
+        if (!string.IsNullOrEmpty(providerKey))
+        {
+            return await conn.QueryAsync<FederatedIdentity>(
+                "SELECT * FROM vibe_system.federated_identities WHERE provider_key = @ProviderKey ORDER BY id LIMIT @Limit OFFSET @Offset",
+                new { ProviderKey = providerKey, Limit = limit, Offset = offset });
+        }
         return await conn.QueryAsync<FederatedIdentity>(
             "SELECT * FROM vibe_system.federated_identities ORDER BY id LIMIT @Limit OFFSET @Offset",
             new { Limit = limit, Offset = offset });
@@ -450,12 +483,17 @@ public class VibeDataService
 
     public async Task<EdgeClientCredential?> UpdateCredentialAsync(int id, Action<EdgeClientCredential> applyUpdates)
     {
-        var existing = await GetCredentialByIdAsync(id);
+        using var conn = CreateConnection();
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+
+        var existing = await conn.QuerySingleOrDefaultAsync<EdgeClientCredential>(
+            "SELECT * FROM vibe_system.edge_client_credentials WHERE id = @Id FOR UPDATE",
+            new { Id = id }, tx);
         if (existing == null) return null;
 
         applyUpdates(existing);
 
-        using var conn = CreateConnection();
         await conn.ExecuteAsync("""
             UPDATE vibe_system.edge_client_credentials SET
                 signing_key = @SigningKey,
@@ -463,9 +501,13 @@ public class VibeDataService
                 is_active = @IsActive,
                 updated_at = NOW()
             WHERE id = @Id
-            """, existing);
+            """, existing, tx);
 
-        return await GetCredentialByIdAsync(id);
+        tx.Commit();
+
+        return await conn.QuerySingleOrDefaultAsync<EdgeClientCredential>(
+            "SELECT * FROM vibe_system.edge_client_credentials WHERE id = @Id",
+            new { Id = id });
     }
 
     public async Task<bool> DeleteCredentialAsync(int id)

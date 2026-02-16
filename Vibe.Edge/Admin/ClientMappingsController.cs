@@ -61,6 +61,12 @@ public class ClientMappingsController : ControllerBase
     [HttpPut("{id:int}")]
     public async Task<IActionResult> Update(string key, int id, [FromBody] UpdateClientMappingRequest request)
     {
+        var existing = await _dataService.GetClientMappingByIdAsync(id);
+        if (existing == null || existing.ProviderKey != key)
+            return NotFound(ApiResponse<object>.FailureResponse(
+                "Client mapping not found", "CLIENT_MAPPING_NOT_FOUND",
+                requestId: HttpContext.TraceIdentifier));
+
         var updated = await _dataService.UpdateClientMappingAsync(id, m =>
         {
             if (request.VibeClientId != null) m.VibeClientId = request.VibeClientId;
@@ -81,6 +87,12 @@ public class ClientMappingsController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(string key, int id)
     {
+        var existingMapping = await _dataService.GetClientMappingByIdAsync(id);
+        if (existingMapping == null || existingMapping.ProviderKey != key)
+            return NotFound(ApiResponse<object>.FailureResponse(
+                "Client mapping not found", "CLIENT_MAPPING_NOT_FOUND",
+                requestId: HttpContext.TraceIdentifier));
+
         var deleted = await _dataService.DeleteClientMappingAsync(id);
         if (!deleted)
             return NotFound(ApiResponse<object>.FailureResponse(

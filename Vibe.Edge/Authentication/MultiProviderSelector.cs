@@ -21,12 +21,12 @@ public class MultiProviderSelector
     {
         var token = ExtractBearerToken(context);
         if (string.IsNullOrEmpty(token))
-            return null;
+            return "FallbackReject";
 
         if (token.Length > 16384)
         {
             _logger.LogWarning("EDGE_AUTH: Oversized JWT token ({Length} chars)", token.Length);
-            return null;
+            return "FallbackReject";
         }
 
         try
@@ -35,7 +35,7 @@ public class MultiProviderSelector
             if (!handler.CanReadToken(token))
             {
                 _logger.LogWarning("EDGE_AUTH: Malformed JWT token");
-                return null;
+                return "FallbackReject";
             }
 
             var jwt = handler.ReadJwtToken(token);
@@ -44,7 +44,7 @@ public class MultiProviderSelector
             if (string.IsNullOrEmpty(issuer))
             {
                 _logger.LogWarning("EDGE_AUTH: JWT missing iss claim");
-                return null;
+                return "FallbackReject";
             }
 
             var mappings = _issuerToScheme;
@@ -54,12 +54,12 @@ public class MultiProviderSelector
             }
 
             _logger.LogWarning("EDGE_AUTH: Unknown issuer {Issuer}", issuer);
-            return null;
+            return "FallbackReject";
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "EDGE_AUTH: Failed to read JWT issuer");
-            return null;
+            return "FallbackReject";
         }
     }
 

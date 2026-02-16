@@ -1,21 +1,27 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
 namespace Vibe.Edge.Models;
 
 public class CreateOidcProviderRequest
 {
+    [Required]
     [JsonPropertyName("provider_key")]
     public string ProviderKey { get; set; } = string.Empty;
 
+    [Required]
     [JsonPropertyName("display_name")]
     public string DisplayName { get; set; } = string.Empty;
 
+    [Required]
     [JsonPropertyName("issuer")]
     public string Issuer { get; set; } = string.Empty;
 
+    [Required]
     [JsonPropertyName("discovery_url")]
     public string DiscoveryUrl { get; set; } = string.Empty;
 
+    [Required]
     [JsonPropertyName("audience")]
     public string Audience { get; set; } = string.Empty;
 
@@ -70,9 +76,11 @@ public class UpdateOidcProviderRequest
 
 public class CreateRoleMappingRequest
 {
+    [Required]
     [JsonPropertyName("external_role")]
     public string ExternalRole { get; set; } = string.Empty;
 
+    [Required]
     [JsonPropertyName("vibe_permission")]
     public string VibePermission { get; set; } = string.Empty;
 
@@ -103,6 +111,7 @@ public class UpdateRoleMappingRequest
 
 public class CreateClientMappingRequest
 {
+    [Required]
     [JsonPropertyName("vibe_client_id")]
     public string VibeClientId { get; set; } = string.Empty;
 
@@ -124,9 +133,11 @@ public class UpdateClientMappingRequest
 
 public class CreateCredentialRequest
 {
+    [Required]
     [JsonPropertyName("client_id")]
     public string ClientId { get; set; } = string.Empty;
 
+    [Required]
     [JsonPropertyName("signing_key")]
     public string SigningKey { get; set; } = string.Empty;
 
@@ -200,24 +211,11 @@ public class ProviderHealthStatus
 
 public class BootstrapProviderConfig
 {
-    [JsonPropertyName("ProviderKey")]
     public string ProviderKey { get; set; } = string.Empty;
-
-    [JsonPropertyName("DisplayName")]
     public string DisplayName { get; set; } = string.Empty;
-
-    [JsonPropertyName("Issuer")]
     public string Issuer { get; set; } = string.Empty;
-
-    [JsonPropertyName("DiscoveryUrl")]
     public string DiscoveryUrl { get; set; } = string.Empty;
-
-    [JsonPropertyName("Audience")]
     public string Audience { get; set; } = string.Empty;
-
-    [JsonPropertyName("IsBootstrap")]
     public bool IsBootstrap { get; set; } = true;
-
-    [JsonPropertyName("ClockSkewSeconds")]
     public int ClockSkewSeconds { get; set; } = 60;
 }

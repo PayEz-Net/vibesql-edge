@@ -40,4 +40,9 @@ public class DefaultClientCredentialProvider : IClientCredentialProvider
 
         return credential.SigningKey;
     }
+
+    public void InvalidateCache(string clientId)
+    {
+        _cache.TryRemove(clientId, out _);
+    }
 }

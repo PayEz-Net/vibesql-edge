@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Vibe.Edge.Credentials;
 using Vibe.Edge.Data;
 using Vibe.Edge.Data.Models;
 using Vibe.Edge.Models;
@@ -16,12 +17,14 @@ namespace Vibe.Edge.Admin;
 public class CredentialsController : ControllerBase
 {
     private readonly VibeDataService _dataService;
+    private readonly IClientCredentialProvider _credentialProvider;
     private readonly ISecurityEventSink _eventSink;
     private readonly ILogger<CredentialsController> _logger;
 
-    public CredentialsController(VibeDataService dataService, ISecurityEventSink eventSink, ILogger<CredentialsController> logger)
+    public CredentialsController(VibeDataService dataService, IClientCredentialProvider credentialProvider, ISecurityEventSink eventSink, ILogger<CredentialsController> logger)
     {
         _dataService = dataService;
+        _credentialProvider = credentialProvider;
         _eventSink = eventSink;
         _logger = logger;
     }
@@ -80,6 +83,8 @@ public class CredentialsController : ControllerBase
                 "Credential not found", "CREDENTIAL_NOT_FOUND",
                 requestId: HttpContext.TraceIdentifier));
 
+        _credentialProvider.InvalidateCache(updated.ClientId);
+
         await _eventSink.EmitSafeAsync(new EdgeSecurityEvent
         {
             EventType = "credential_updated",
@@ -99,11 +104,15 @@ public class CredentialsController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
+        var existing = await _dataService.GetCredentialByIdAsync(id);
         var deleted = await _dataService.DeleteCredentialAsync(id);
         if (!deleted)
             return NotFound(ApiResponse<object>.FailureResponse(
                 "Credential not found", "CREDENTIAL_NOT_FOUND",
                 requestId: HttpContext.TraceIdentifier));
+
+        if (existing != null)
+            _credentialProvider.InvalidateCache(existing.ClientId);
 
         await _eventSink.EmitSafeAsync(new EdgeSecurityEvent
         {

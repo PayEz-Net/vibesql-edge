@@ -63,6 +63,12 @@ public class RoleMappingsController : ControllerBase
     [HttpPut("{id:int}")]
     public async Task<IActionResult> Update(string key, int id, [FromBody] UpdateRoleMappingRequest request)
     {
+        var existing = await _dataService.GetRoleMappingByIdAsync(id);
+        if (existing == null || existing.ProviderKey != key)
+            return NotFound(ApiResponse<object>.FailureResponse(
+                "Role mapping not found", "ROLE_MAPPING_NOT_FOUND",
+                requestId: HttpContext.TraceIdentifier));
+
         var updated = await _dataService.UpdateRoleMappingAsync(id, m =>
         {
             if (request.VibePermission != null) m.VibePermission = request.VibePermission;
@@ -84,6 +90,12 @@ public class RoleMappingsController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(string key, int id)
     {
+        var existing = await _dataService.GetRoleMappingByIdAsync(id);
+        if (existing == null || existing.ProviderKey != key)
+            return NotFound(ApiResponse<object>.FailureResponse(
+                "Role mapping not found", "ROLE_MAPPING_NOT_FOUND",
+                requestId: HttpContext.TraceIdentifier));
+
         var deleted = await _dataService.DeleteRoleMappingAsync(id);
         if (!deleted)
             return NotFound(ApiResponse<object>.FailureResponse(

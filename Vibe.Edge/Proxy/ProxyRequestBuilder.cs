@@ -9,7 +9,8 @@ public static class ProxyRequestBuilder
         string timestamp,
         string signature,
         int vibeUserId,
-        string viaHeader)
+        string viaHeader,
+        byte[]? bodyBytes = null)
     {
         var method = new HttpMethod(originalRequest.Method);
         var request = new HttpRequestMessage(method, targetUrl);
@@ -29,9 +30,9 @@ public static class ProxyRequestBuilder
             }
         }
 
-        if (originalRequest.ContentLength is > 0)
+        if (bodyBytes != null && bodyBytes.Length > 0)
         {
-            request.Content = new StreamContent(originalRequest.Body);
+            request.Content = new ByteArrayContent(bodyBytes);
             if (originalRequest.ContentType != null)
             {
                 request.Content.Headers.ContentType =

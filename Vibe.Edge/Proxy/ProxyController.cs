@@ -100,9 +100,16 @@ public class ProxyController : ControllerBase
 
         Request.EnableBuffering();
         Request.Body.Position = 0;
+        byte[]? bodyBytes = null;
+        if (Request.ContentLength is > 0)
+        {
+            using var ms = new MemoryStream();
+            await Request.Body.CopyToAsync(ms, HttpContext.RequestAborted);
+            bodyBytes = ms.ToArray();
+        }
 
         var proxyRequest = ProxyRequestBuilder.Build(
-            Request, targetUrl, vibeClientId, timestamp, signature, vibeUserId, viaHeader);
+            Request, targetUrl, vibeClientId, timestamp, signature, vibeUserId, viaHeader, bodyBytes);
 
         _logger.LogInformation(
             "EDGE_PROXY: Forwarding {Method} {Path} for client {ClientId} (user {UserId})",

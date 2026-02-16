@@ -22,7 +22,8 @@ public class IdentityResolutionMiddleware
     public async Task InvokeAsync(HttpContext context)
     {
         var path = context.Request.Path.Value ?? "";
-        if (path.StartsWith("/health", StringComparison.OrdinalIgnoreCase))
+        if (path.StartsWith("/v1/admin/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/health", StringComparison.OrdinalIgnoreCase))
         {
             await _next(context);
             return;

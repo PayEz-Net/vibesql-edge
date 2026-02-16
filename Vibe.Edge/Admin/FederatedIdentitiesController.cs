@@ -21,9 +21,9 @@ public class FederatedIdentitiesController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] int limit = 100, [FromQuery] int offset = 0)
+    public async Task<IActionResult> List([FromQuery] int limit = 100, [FromQuery] int offset = 0, [FromQuery(Name = "provider_key")] string? providerKey = null)
     {
-        var identities = await _dataService.GetFederatedIdentitiesAsync(limit, offset);
+        var identities = await _dataService.GetFederatedIdentitiesAsync(limit, offset, providerKey);
         return Ok(ApiResponse<object>.SuccessResponse(
             identities, "Federated identities retrieved", "FEDERATED_IDENTITIES_LISTED",
             HttpContext.TraceIdentifier));

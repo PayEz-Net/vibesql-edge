@@ -3,15 +3,15 @@
 #
 # Prerequisites:
 #   - Public.Api running (default: http://localhost:5000)
-#   - Vibe.Edge running (default: http://localhost:5200)
+#   - Vibe.Edge running (default: http://localhost:5100)
 #   - Valid bootstrap IDP JWT token
 #   - Matching signing key in edge_client_credentials
 #
 # Usage:
-#   ./Tests/test-edge-parity.ps1 -EdgeUrl "http://localhost:5200" -ProxyUrl "http://localhost:5050" -Token "eyJ..."
+#   ./Tests/test-edge-parity.ps1 -EdgeUrl "http://localhost:5100" -ProxyUrl "http://localhost:5050" -Token "eyJ..."
 
 param(
-    [string]$EdgeUrl = "http://localhost:5200",
+    [string]$EdgeUrl = "http://localhost:5100",
     [string]$ProxyUrl = "http://localhost:5050",
     [string]$Token = "",
     [string]$Collection = "test_parity"
