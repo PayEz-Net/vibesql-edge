@@ -20,6 +20,24 @@ public class RequireAdminPermissionAttribute : Attribute, IAsyncActionFilter
             return;
         }
 
+        var env = httpContext.RequestServices.GetRequiredService<IWebHostEnvironment>();
+        var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
+        var configuredKey = config["VibeEdge:AdminApiKey"];
+
+        if (env.IsDevelopment() && string.IsNullOrEmpty(configuredKey))
+        {
+            await next();
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(configuredKey))
+        {
+            context.Result = new UnauthorizedObjectResult(ApiResponse<object>.FailureResponse(
+                "Invalid or missing X-Edge-Admin-Key", "ADMIN_KEY_INVALID",
+                requestId: httpContext.TraceIdentifier));
+            return;
+        }
+
         if (httpContext.User.Identity?.IsAuthenticated != true)
         {
             context.Result = new UnauthorizedObjectResult(ApiResponse<object>.FailureResponse(
