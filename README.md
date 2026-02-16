@@ -69,7 +69,7 @@ Every proxied request is logged with provider, user, client, path, and method. P
     "EdgeDb": "Host=localhost;Port=5432;Database=vibesql;User Id=postgres;Password=postgres"
   },
   "VibeEdge": {
-    "PublicApiUrl": "http://localhost:5000",
+    "PublicApiUrl": "http://localhost:5100",
     "BootstrapProviders": [
       {
         "ProviderKey": "auth0-prod",
@@ -90,13 +90,13 @@ Every proxied request is logged with provider, user, client, path, and method. P
 dotnet run
 ```
 
-Edge initializes its schema in VibeSQL, seeds bootstrap providers, and starts accepting requests.
+Edge initializes its schema in VibeSQL, seeds bootstrap providers, and starts accepting requests on port **5100**. The upstream VibeSQL Public API runs separately (default port 5000).
 
 ### 3. Register a Client Mapping
 
 ```bash
 # Map your provider to a VibeSQL client ID
-curl -X POST http://localhost:5000/v1/admin/providers/auth0-prod/client-mappings \
+curl -X POST http://localhost:5100/v1/admin/providers/auth0-prod/client-mappings \
   -H "Content-Type: application/json" \
   -d '{"vibe_client_id": "your-client-id", "is_active": true}'
 ```
@@ -105,12 +105,12 @@ curl -X POST http://localhost:5000/v1/admin/providers/auth0-prod/client-mappings
 
 ```bash
 # Map "admin" role from your IDP to VibeSQL "admin" permission
-curl -X POST http://localhost:5000/v1/admin/providers/auth0-prod/role-mappings \
+curl -X POST http://localhost:5100/v1/admin/providers/auth0-prod/role-mappings \
   -H "Content-Type: application/json" \
   -d '{"external_role": "admin", "vibe_permission": "admin"}'
 
 # Map "viewer" role to read-only with restricted collections
-curl -X POST http://localhost:5000/v1/admin/providers/auth0-prod/role-mappings \
+curl -X POST http://localhost:5100/v1/admin/providers/auth0-prod/role-mappings \
   -H "Content-Type: application/json" \
   -d '{
     "external_role": "viewer",
@@ -124,7 +124,7 @@ curl -X POST http://localhost:5000/v1/admin/providers/auth0-prod/role-mappings \
 
 ```bash
 # Your app sends requests with its own JWT — Edge handles the rest
-curl http://localhost:5000/v1/query \
+curl http://localhost:5100/v1/query \
   -H "Authorization: Bearer <your-idp-jwt>" \
   -H "Content-Type: application/json" \
   -d '{"sql": "SELECT * FROM products"}'
