@@ -88,6 +88,16 @@ public class IdentityResolutionMiddleware
             if (provider.AutoProvision)
             {
                 identity = await resolver.ProvisionAsync(providerKey, subject, email, null);
+
+                if (!string.IsNullOrEmpty(provider.ProvisionDefaultRole))
+                {
+                    var existingMapping = (await dataService.GetRoleMappingsByRolesAsync(
+                        providerKey, new[] { provider.ProvisionDefaultRole })).FirstOrDefault();
+                    if (existingMapping != null)
+                    {
+                        roles = new List<string> { provider.ProvisionDefaultRole };
+                    }
+                }
             }
             else
             {

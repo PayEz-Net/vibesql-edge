@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Vibe.Edge.Data;
 using Vibe.Edge.Models;
@@ -6,6 +7,7 @@ namespace Vibe.Edge.Health;
 
 [ApiController]
 [Route("health")]
+[AllowAnonymous]
 public class ProviderHealthCheck : ControllerBase
 {
     private readonly VibeDataService _dataService;

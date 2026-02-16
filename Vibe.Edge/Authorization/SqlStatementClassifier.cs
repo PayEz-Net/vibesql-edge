@@ -166,7 +166,7 @@ public static class SqlStatementClassifier
         var i = 0;
         while (i < sql.Length && char.IsWhiteSpace(sql[i])) i++;
         var start = i;
-        while (i < sql.Length && char.IsLetterOrDigit(sql[i]) || (i < sql.Length && sql[i] == '_')) i++;
+        while (i < sql.Length && (char.IsLetterOrDigit(sql[i]) || sql[i] == '_')) i++;
         if (i == start) return null;
         return sql[start..i];
     }

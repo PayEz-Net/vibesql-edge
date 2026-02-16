@@ -13,16 +13,16 @@ public class RequireAdminPermissionAttribute : Attribute, IAsyncActionFilter
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         var httpContext = context.HttpContext;
+        var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
+        var configuredKey = config["VibeEdge:AdminApiKey"];
 
-        if (ValidateAdminApiKey(httpContext))
+        if (ValidateAdminApiKey(httpContext, configuredKey))
         {
             await next();
             return;
         }
 
         var env = httpContext.RequestServices.GetRequiredService<IWebHostEnvironment>();
-        var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
-        var configuredKey = config["VibeEdge:AdminApiKey"];
 
         if (env.IsDevelopment() && string.IsNullOrEmpty(configuredKey))
         {
@@ -74,11 +74,8 @@ public class RequireAdminPermissionAttribute : Attribute, IAsyncActionFilter
         await next();
     }
 
-    private static bool ValidateAdminApiKey(HttpContext httpContext)
+    private static bool ValidateAdminApiKey(HttpContext httpContext, string? configuredKey)
     {
-        var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
-        var configuredKey = config["VibeEdge:AdminApiKey"];
-
         if (string.IsNullOrEmpty(configuredKey))
             return false;
 

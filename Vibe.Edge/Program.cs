@@ -30,8 +30,8 @@ builder.Services.AddSingleton<MultiProviderSelector>();
 builder.Services.AddSingleton<DynamicSchemeRegistrar>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DynamicSchemeRegistrar>());
 
-builder.Services.AddScoped<FederatedIdentityResolver>();
-builder.Services.AddScoped<PermissionResolver>();
+builder.Services.AddSingleton<FederatedIdentityResolver>();
+builder.Services.AddSingleton<PermissionResolver>();
 
 builder.Services.AddSingleton<IClientCredentialProvider, DefaultClientCredentialProvider>();
 builder.Services.AddSingleton<ISecurityEventSink, ConsoleSecurityEventSink>();

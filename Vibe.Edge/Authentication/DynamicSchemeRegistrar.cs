@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
@@ -15,7 +16,8 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
     private readonly IConfiguration _configuration;
     private readonly ILogger<DynamicSchemeRegistrar> _logger;
     private Timer? _refreshTimer;
-    private readonly HashSet<string> _registeredSchemes = new();
+    private readonly ConcurrentDictionary<string, byte> _registeredSchemes = new();
+    private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
     public DynamicSchemeRegistrar(
         IServiceProvider serviceProvider,
@@ -101,6 +103,8 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
 
     private async Task RefreshSchemesAsync()
     {
+        if (!await _refreshLock.WaitAsync(0))
+            return;
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -151,17 +155,17 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                     typeof(JwtBearerHandler));
                 schemeProvider.AddScheme(scheme);
 
-                _registeredSchemes.Add(schemeName);
+                _registeredSchemes.TryAdd(schemeName, 0);
 
                 _logger.LogInformation("EDGE_SCHEMES: Registered scheme {Scheme} for issuer {Issuer}",
                     schemeName, provider.Issuer);
             }
 
-            foreach (var oldScheme in _registeredSchemes.Except(activeSchemes).ToList())
+            foreach (var oldScheme in _registeredSchemes.Keys.Except(activeSchemes).ToList())
             {
                 schemeProvider.RemoveScheme(oldScheme);
                 optionsCache.TryRemove(oldScheme);
-                _registeredSchemes.Remove(oldScheme);
+                _registeredSchemes.TryRemove(oldScheme, out _);
                 _logger.LogInformation("EDGE_SCHEMES: Removed scheme {Scheme}", oldScheme);
             }
 
@@ -172,6 +176,10 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "EDGE_SCHEMES: Failed to refresh schemes, keeping existing");
+        }
+        finally
+        {
+            _refreshLock.Release();
         }
     }
 }
