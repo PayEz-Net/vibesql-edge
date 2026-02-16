@@ -1,0 +1,37 @@
+## .NET 
+bin/ 
+obj/ 
+*.user 
+*.suo 
+*.userosscache 
+*.dll 
+*.exe 
+*.pdb 
+ 
+## IDE 
+.vs/ 
+.vscode/ 
+.idea/ 
+*.swp 
+ 
+## Build 
+[Dd]ebug/ 
+[Rr]elease/ 
+x64/ 
+x86/ 
+build/ 
+bld/ 
+ 
+## NuGet 
+*.nupkg 
+**/packages/* 
+project.lock.json 
+project.fragment.lock.json 
+artifacts/ 
+ 
+## OS 
+.DS_Store 
+Thumbs.db 
+ 
+## User secrets 
+appsettings.*.local.json
