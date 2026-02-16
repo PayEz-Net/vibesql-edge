@@ -15,8 +15,7 @@ Recommended:
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
 │  Your App   │────▶│  VibeSQL     │────▶│  VibeSQL     │
 │  + PayEz    │     │  Edge        │     │  Server      │
-│  (JWT)      │     │  (validate   │     │  (data)      │
-│             │     │   + proxy)   │     │              │
+│  (JWT)      │     │  (:5100)     │     │  (:5000)     │
 └─────────────┘     └──────────────┘     └──────────────┘
 
 Also works with:
@@ -29,10 +28,10 @@ Also works with:
 └─────────────┘     └──────────────┘     └──────────────┘
 ```
 
-1. Your app sends requests with a JWT from your identity provider
-2. Edge validates the token against the provider's JWKS
+1. Your app sends requests with a JWT from your identity provider to **Edge** (:5100)
+2. Edge validates the token against the registered provider's JWKS
 3. Edge maps the external identity to a VibeSQL user and resolves permissions
-4. Edge signs the request with HMAC and forwards it to the VibeSQL API
+4. Edge signs the request with HMAC and forwards it to VibeSQL **Server** (:5000)
 5. Your app gets the response — never touches HMAC keys directly
 
 ---
@@ -40,7 +39,7 @@ Also works with:
 ## Key Features
 
 **Dynamic Provider Registration**
-Register OIDC providers at runtime via API. No restart, no config file changes. Edge fetches JWKS keys and validates tokens automatically.
+Register OIDC providers at runtime via API. No restart, no config file changes. Edge fetches JWKS keys and validates tokens automatically. Refreshes every 30 minutes.
 
 **Federated Identity Mapping**
 External users are mapped to VibeSQL user IDs on first authentication. Subsequent requests resolve instantly. Supports auto-provisioning for self-service onboarding.
@@ -53,6 +52,9 @@ Edge holds the HMAC signing keys. Your app never sees them. Requests are signed 
 
 **Multi-Tenant Client Mapping**
 Map providers to VibeSQL client IDs for automatic tenant isolation. Each provider can target a different client, or multiple providers can share one.
+
+**Rate Limiting**
+Built-in rate limiting at three levels: 500 req/min global, 200 req/min per provider (proxy), 30 req/min per IP (admin).
 
 **Audit Trail**
 Every proxied request is logged with provider, user, client, path, and method. Pluggable security event sink for custom monitoring.
@@ -69,7 +71,8 @@ Every proxied request is logged with provider, user, client, path, and method. P
     "EdgeDb": "Host=localhost;Port=5432;Database=vibesql;User Id=postgres;Password=postgres"
   },
   "VibeEdge": {
-    "PublicApiUrl": "http://localhost:5100",
+    "PublicApiUrl": "http://localhost:5000",
+    "AdminApiKey": "your-admin-secret-here",
     "BootstrapProviders": [
       {
         "ProviderKey": "auth0-prod",
@@ -84,34 +87,50 @@ Every proxied request is logged with provider, user, client, path, and method. P
 }
 ```
 
+> **Note:** `PublicApiUrl` is the **upstream** VibeSQL Server (default :5000). Edge itself listens on :5100. Do not point Edge at its own port.
+
 ### 2. Run
 
 ```bash
 dotnet run
 ```
 
-Edge initializes its schema in VibeSQL, seeds bootstrap providers, and starts accepting requests on port **5100**. The upstream VibeSQL Public API runs separately (default port 5000).
+Edge initializes its schema in VibeSQL, seeds bootstrap providers, and starts accepting requests on port **5100**. The upstream VibeSQL Public API runs separately on port **5000**.
 
-### 3. Register a Client Mapping
+### 3. Register HMAC Credentials
+
+Before Edge can proxy requests, it needs an HMAC signing key for the target VibeSQL client:
 
 ```bash
-# Map your provider to a VibeSQL client ID
-curl -X POST http://localhost:5100/v1/admin/providers/auth0-prod/client-mappings \
+curl -X POST http://localhost:5100/v1/admin/credentials \
   -H "Content-Type: application/json" \
+  -H "X-Edge-Admin-Key: your-admin-secret-here" \
+  -d '{"client_id": "your-client-id", "signing_key": "your-hmac-secret", "display_name": "Production"}'
+```
+
+### 4. Register a Client Mapping
+
+```bash
+# Map your OIDC provider to a VibeSQL client ID
+curl -X POST http://localhost:5100/v1/admin/oidc-providers/auth0-prod/clients \
+  -H "Content-Type: application/json" \
+  -H "X-Edge-Admin-Key: your-admin-secret-here" \
   -d '{"vibe_client_id": "your-client-id", "is_active": true}'
 ```
 
-### 4. Map Roles to Permissions
+### 5. Map Roles to Permissions
 
 ```bash
 # Map "admin" role from your IDP to VibeSQL "admin" permission
-curl -X POST http://localhost:5100/v1/admin/providers/auth0-prod/role-mappings \
+curl -X POST http://localhost:5100/v1/admin/oidc-providers/auth0-prod/roles \
   -H "Content-Type: application/json" \
+  -H "X-Edge-Admin-Key: your-admin-secret-here" \
   -d '{"external_role": "admin", "vibe_permission": "admin"}'
 
 # Map "viewer" role to read-only with restricted collections
-curl -X POST http://localhost:5100/v1/admin/providers/auth0-prod/role-mappings \
+curl -X POST http://localhost:5100/v1/admin/oidc-providers/auth0-prod/roles \
   -H "Content-Type: application/json" \
+  -H "X-Edge-Admin-Key: your-admin-secret-here" \
   -d '{
     "external_role": "viewer",
     "vibe_permission": "read",
@@ -120,7 +139,7 @@ curl -X POST http://localhost:5100/v1/admin/providers/auth0-prod/role-mappings \
   }'
 ```
 
-### 5. Proxy Requests
+### 6. Proxy Requests
 
 ```bash
 # Your app sends requests with its own JWT — Edge handles the rest
@@ -134,52 +153,59 @@ curl http://localhost:5100/v1/query \
 
 ## Admin API
 
-All admin endpoints are under `/v1/admin/`.
+All admin endpoints require authentication via `X-Edge-Admin-Key` header or a JWT with admin-level permissions. Rate limited to 30 requests/minute per IP.
 
 ### OIDC Providers
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/v1/admin/providers` | List all providers |
-| GET | `/v1/admin/providers/{key}` | Get provider details |
-| POST | `/v1/admin/providers` | Register new provider |
-| PUT | `/v1/admin/providers/{key}` | Update provider |
-| DELETE | `/v1/admin/providers/{key}` | Disable provider |
-| POST | `/v1/admin/providers/{key}/refresh` | Force JWKS refresh |
+| GET | `/v1/admin/oidc-providers` | List all providers |
+| POST | `/v1/admin/oidc-providers` | Register new provider |
+| GET | `/v1/admin/oidc-providers/{key}` | Get provider details |
+| PUT | `/v1/admin/oidc-providers/{key}` | Update provider |
+| DELETE | `/v1/admin/oidc-providers/{key}` | Disable provider (soft delete) |
+| POST | `/v1/admin/oidc-providers/{key}/test` | Test provider connectivity (JWKS fetch) |
+| POST | `/v1/admin/oidc-providers/{key}/refresh` | Force JWKS refresh |
 
 ### Role Mappings
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/v1/admin/providers/{key}/role-mappings` | List role mappings |
-| POST | `/v1/admin/providers/{key}/role-mappings` | Create role mapping |
-| PUT | `/v1/admin/role-mappings/{id}` | Update role mapping |
-| DELETE | `/v1/admin/role-mappings/{id}` | Delete role mapping |
+| GET | `/v1/admin/oidc-providers/{key}/roles` | List role mappings |
+| POST | `/v1/admin/oidc-providers/{key}/roles` | Create role mapping |
+| PUT | `/v1/admin/oidc-providers/{key}/roles/{id}` | Update role mapping |
+| DELETE | `/v1/admin/oidc-providers/{key}/roles/{id}` | Delete role mapping |
 
 ### Client Mappings
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/v1/admin/providers/{key}/client-mappings` | List client mappings |
-| POST | `/v1/admin/providers/{key}/client-mappings` | Create client mapping |
-| PUT | `/v1/admin/client-mappings/{id}` | Update client mapping |
-| DELETE | `/v1/admin/client-mappings/{id}` | Delete client mapping |
+| GET | `/v1/admin/oidc-providers/{key}/clients` | List client mappings |
+| POST | `/v1/admin/oidc-providers/{key}/clients` | Create client mapping |
+| PUT | `/v1/admin/oidc-providers/{key}/clients/{id}` | Update client mapping |
+| DELETE | `/v1/admin/oidc-providers/{key}/clients/{id}` | Delete client mapping |
 
 ### Federated Identities
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/v1/admin/federated-identities` | List all identities |
+| GET | `/v1/admin/federated-identities` | List identities (supports `limit`, `offset`, `provider_key`) |
 | GET | `/v1/admin/federated-identities/{id}` | Get identity details |
 
 ### Client Credentials
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/v1/admin/credentials` | List HMAC credentials |
+| GET | `/v1/admin/credentials` | List HMAC credentials (keys masked) |
 | POST | `/v1/admin/credentials` | Create credential |
 | PUT | `/v1/admin/credentials/{id}` | Update credential |
 | DELETE | `/v1/admin/credentials/{id}` | Delete credential |
+
+### Health
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/health/providers` | None | Check all provider JWKS reachability |
 
 ---
 
@@ -190,13 +216,14 @@ All admin endpoints are under `/v1/admin/`.
 ```
 Incoming Request (JWT from your IDP)
   │
+  ├─ RateLimiter — 500/min global, 200/min per provider
   ├─ MultiProviderSelector — Identifies which OIDC provider issued the token
   ├─ JwtBearerHandler — Validates token against provider's JWKS
   ├─ IdentityResolutionMiddleware — Resolves federated identity + VibeSQL user ID
-  ├─ PermissionEnforcementMiddleware — Checks role mappings + permission level
-  ├─ AuditMiddleware — Logs the request
+  ├─ PermissionEnforcementMiddleware — Checks role mappings + SQL statement classification
+  ├─ AuditMiddleware — Logs the request with security event details
   │
-  └─ ProxyController — Signs with HMAC, forwards to VibeSQL API
+  └─ ProxyController — Signs with HMAC, forwards to VibeSQL Server (:5000)
 ```
 
 ### Permission Levels
@@ -241,6 +268,7 @@ Edge stores its configuration in VibeSQL under the `vibe_system` schema:
 | HMAC signing for VibeSQL | Automatic | Manual config | Build from scratch |
 | SQL statement classification | Built-in | Not available | Build from scratch |
 | Multi-tenant client scoping | Automatic | Manual routing | Build from scratch |
+| Rate limiting | Built-in (3 tiers) | Built-in | Build from scratch |
 | Deployment | Single binary | Separate infrastructure | Embedded in app |
 
 ---
@@ -249,6 +277,7 @@ Edge stores its configuration in VibeSQL under the `vibe_system` schema:
 
 - [VibeSQL Server](https://github.com/PayEz-Net/vibesql-server) — Production multi-tenant PostgreSQL server
 - [VibeSQL Micro](https://github.com/PayEz-Net/vibesql-micro) — Single-binary dev tool
+- [VibeSQL Audit](https://github.com/PayEz-Net/vibesql-audit) — PCI DSS compliant audit logging
 - [Vibe SDK](https://github.com/PayEz-Net/vibe-sdk) — TypeScript ORM with live schema sync
 - [Website](https://vibesql.online) — Documentation and overview
 
