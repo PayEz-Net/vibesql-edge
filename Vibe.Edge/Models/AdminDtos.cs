@@ -136,9 +136,6 @@ public class CreateCredentialRequest
 
 public class UpdateCredentialRequest
 {
-    [JsonPropertyName("signing_key")]
-    public string? SigningKey { get; set; }
-
     [JsonPropertyName("display_name")]
     public string? DisplayName { get; set; }
 
@@ -154,9 +151,6 @@ public class CredentialResponse
     [JsonPropertyName("client_id")]
     public string ClientId { get; set; } = string.Empty;
 
-    [JsonPropertyName("signing_key")]
-    public string SigningKey { get; set; } = string.Empty;
-
     [JsonPropertyName("display_name")]
     public string? DisplayName { get; set; }
 
@@ -169,25 +163,17 @@ public class CredentialResponse
     [JsonPropertyName("updated_at")]
     public DateTimeOffset UpdatedAt { get; set; }
 
-    public static CredentialResponse From(Data.Models.EdgeClientCredential c, bool maskKey = true)
+    public static CredentialResponse From(Data.Models.EdgeClientCredential c)
     {
         return new CredentialResponse
         {
             Id = c.Id,
             ClientId = c.ClientId,
-            SigningKey = maskKey ? MaskKey(c.SigningKey) : c.SigningKey,
             DisplayName = c.DisplayName,
             IsActive = c.IsActive,
             CreatedAt = c.CreatedAt,
             UpdatedAt = c.UpdatedAt
         };
-    }
-
-    private static string MaskKey(string key)
-    {
-        if (string.IsNullOrEmpty(key) || key.Length <= 8)
-            return "****";
-        return string.Concat(key.AsSpan(0, 4), "****", key.AsSpan(key.Length - 4));
     }
 }
 

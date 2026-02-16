@@ -71,7 +71,6 @@ public class CredentialsController : ControllerBase
     {
         var updated = await _dataService.UpdateCredentialAsync(id, c =>
         {
-            if (request.SigningKey != null) c.SigningKey = request.SigningKey;
             if (request.DisplayName != null) c.DisplayName = request.DisplayName;
             if (request.IsActive.HasValue) c.IsActive = request.IsActive.Value;
         });
