@@ -47,8 +47,11 @@ External users are mapped to VibeSQL user IDs on first authentication. Subsequen
 **Role-Based Permission Mapping**
 Map your IDP's roles to VibeSQL permissions (`read`, `write`, `schema`, `admin`). Fine-grained control: deny specific SQL statement types, restrict access to specific collections.
 
-**HMAC Request Signing**
+**HMAC Request Signing (default)**
 Edge holds the HMAC signing keys. Your app never sees them. Requests are signed and forwarded to the VibeSQL Public API with proper client scoping.
+
+**Container Secret Auth (internal/k8s)**
+When `VibeSQL:UpstreamAuthMode` is set to `secret`, Edge sends an `Authorization: Secret {key}` header instead of HMAC signing. This is for internal deployments where the upstream VibeSQL Server uses container secret authentication.
 
 **Multi-Tenant Client Mapping**
 Map providers to VibeSQL client IDs for automatic tenant isolation. Each provider can target a different client, or multiple providers can share one.
@@ -245,6 +248,38 @@ Edge stores its configuration in VibeSQL under the `vibe_system` schema:
 - `oidc_provider_client_mappings` — Provider → VibeSQL client ID mappings
 - `federated_identities` — External user → VibeSQL user ID mappings
 - `edge_client_credentials` — HMAC signing keys per client
+
+---
+
+## Upstream Authentication
+
+Edge supports two modes for authenticating to the upstream VibeSQL Server, controlled by `VibeSQL:UpstreamAuthMode`:
+
+**HMAC (default)** -- For edge/DMZ deployments where VibeSQL Server expects HMAC-signed requests:
+
+```json
+{
+  "VibeSQL": {
+    "UpstreamAuthMode": "hmac",
+    "HmacSecret": ""
+  }
+}
+```
+
+Edge signs each proxied request with `X-Vibe-Timestamp`, `X-Vibe-Signature`, and `X-Vibe-Service` headers using the per-client signing key from its credential store.
+
+**Container Secret** -- For internal/k8s deployments where VibeSQL Server is configured with `VibeSQL:AuthMode=secret`:
+
+```json
+{
+  "VibeSQL": {
+    "UpstreamAuthMode": "secret",
+    "ContainerSecret": "your-shared-secret"
+  }
+}
+```
+
+Edge sends `Authorization: Secret {key}` instead of HMAC headers. No per-client signing keys are needed -- the container secret is a single shared key for the deployment.
 
 ---
 

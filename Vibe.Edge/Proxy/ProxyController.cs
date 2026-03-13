@@ -91,11 +91,6 @@ public class ProxyController : ControllerBase
         var publicApiUrl = _configuration["VibeEdge:PublicApiUrl"]
             ?? throw new InvalidOperationException("VibeEdge:PublicApiUrl is not configured");
 
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
-        var signingPath = Request.Path.Value ?? "";
-        var stringToSign = HmacSigner.BuildStringToSign(timestamp, Request.Method, signingPath);
-        var signature = HmacSigner.ComputeSignature(stringToSign, signingKey);
-
         var targetUrl = $"{publicApiUrl.TrimEnd('/')}{Request.Path}{Request.QueryString}";
 
         Request.EnableBuffering();
@@ -108,8 +103,28 @@ public class ProxyController : ControllerBase
             bodyBytes = ms.ToArray();
         }
 
-        var proxyRequest = ProxyRequestBuilder.Build(
-            Request, targetUrl, vibeClientId, timestamp, signature, vibeUserId, viaHeader, bodyBytes);
+        var upstreamAuthMode = _configuration["VibeSQL:UpstreamAuthMode"] ?? "hmac";
+        HttpRequestMessage proxyRequest;
+
+        if (string.Equals(upstreamAuthMode, "secret", StringComparison.OrdinalIgnoreCase))
+        {
+            var containerSecret = _configuration["VibeSQL:ContainerSecret"]
+                ?? throw new InvalidOperationException(
+                    "VibeSQL:ContainerSecret must be configured when UpstreamAuthMode is 'secret'");
+
+            proxyRequest = ProxyRequestBuilder.BuildWithSecret(
+                Request, targetUrl, containerSecret, vibeClientId, vibeUserId, viaHeader, bodyBytes);
+        }
+        else
+        {
+            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+            var signingPath = Request.Path.Value ?? "";
+            var stringToSign = HmacSigner.BuildStringToSign(timestamp, Request.Method, signingPath);
+            var signature = HmacSigner.ComputeSignature(stringToSign, signingKey);
+
+            proxyRequest = ProxyRequestBuilder.Build(
+                Request, targetUrl, vibeClientId, timestamp, signature, vibeUserId, viaHeader, bodyBytes);
+        }
 
         _logger.LogInformation(
             "EDGE_PROXY: Forwarding {Method} {Path} for client {ClientId} (user {UserId})",
