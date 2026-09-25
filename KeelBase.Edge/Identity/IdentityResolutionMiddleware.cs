@@ -3,6 +3,7 @@ using KeelBase.Edge.Authentication;
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Models;
 using KeelBase.Edge.Security;
+using KeelBase.Edge.Tenancy;
 
 namespace KeelBase.Edge.Identity;
 
@@ -11,12 +12,14 @@ public class IdentityResolutionMiddleware
     private readonly RequestDelegate _next;
     private readonly ILogger<IdentityResolutionMiddleware> _logger;
     private readonly ISecurityEventSink _eventSink;
+    private readonly ITenantRouter _tenantRouter;
 
-    public IdentityResolutionMiddleware(RequestDelegate next, ILogger<IdentityResolutionMiddleware> logger, ISecurityEventSink eventSink)
+    public IdentityResolutionMiddleware(RequestDelegate next, ILogger<IdentityResolutionMiddleware> logger, ISecurityEventSink eventSink, ITenantRouter tenantRouter)
     {
         _next = next;
         _logger = logger;
         _eventSink = eventSink;
+        _tenantRouter = tenantRouter;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -140,6 +143,21 @@ public class IdentityResolutionMiddleware
                 PermissionLevel.None,
                 roles);
         context.Items["EdgeCaller"] = resolvedCaller;
+
+        var route = await _tenantRouter.ResolveAsync(providerKey, context.RequestAborted);
+        if (!route.IsActive)
+        {
+            _logger.LogWarning("EDGE_IDENTITY: Tenant {TenantClientId} is inactive", providerKey);
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "application/json";
+            var tenantResponse = ApiResponse<object>.FailureResponse(
+                "This app (tenant) is not active yet. An admin must activate it.",
+                "TENANT_INACTIVE",
+                requestId: context.TraceIdentifier);
+            await context.Response.WriteAsync(JsonSerializer.Serialize(tenantResponse));
+            return;
+        }
+        context.Items["EdgeTenantRoute"] = route;
 
         await _next(context);
     }
