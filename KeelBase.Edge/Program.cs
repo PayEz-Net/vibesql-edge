@@ -4,10 +4,12 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Serilog;
 using KeelBase.Edge.Authentication;
-using KeelBase.Edge.Authorization;
+using KeelBase.Edge.Tenancy;
 using KeelBase.Edge.Credentials;
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Identity;
+using KeelBase.Edge.Authorization;
+using KeelBase.Edge.Tenancy.Implementations;
 using KeelBase.Edge.Middleware;
 using KeelBase.Edge.Security;
 
@@ -34,6 +36,7 @@ builder.Services.AddSingleton<FederatedIdentityResolver>();
 builder.Services.AddSingleton<PermissionResolver>();
 
 builder.Services.AddSingleton<IClientCredentialProvider, DefaultClientCredentialProvider>();
+builder.Services.AddSingleton<ITenantRouter, SharedSchemaTenantRouter>();
 builder.Services.AddSingleton<ISecurityEventSink, ConsoleSecurityEventSink>();
 
 builder.Services.AddHttpClient("PublicApi", (sp, client) =>
