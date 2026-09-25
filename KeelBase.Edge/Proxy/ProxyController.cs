@@ -5,6 +5,7 @@ using KeelBase.Edge.Credentials;
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Models;
 using KeelBase.Edge.Security;
+using KeelBase.Edge.Identity;
 
 namespace KeelBase.Edge.Proxy;
 
@@ -103,6 +104,7 @@ public class ProxyController : ControllerBase
             bodyBytes = ms.ToArray();
         }
 
+        var caller = ResolvedCallerExtensions.From(HttpContext);
         var upstreamAuthMode = _configuration["KeelBase:UpstreamAuthMode"] ?? "hmac";
         HttpRequestMessage proxyRequest;
 
@@ -112,8 +114,8 @@ public class ProxyController : ControllerBase
 ?? throw new InvalidOperationException(
                     "KeelBase:ContainerSecret must be configured when UpstreamAuthMode is 'secret'");
 
-            proxyRequest = ProxyRequestBuilder.BuildWithSecret(
-                Request, targetUrl, containerSecret, vibeClientId, vibeUserId, viaHeader, bodyBytes);
+                proxyRequest = ProxyRequestBuilder.BuildWithSecret(
+                    Request, targetUrl, containerSecret, vibeClientId, vibeUserId, viaHeader, bodyBytes, caller);
         }
         else
         {
@@ -122,8 +124,8 @@ public class ProxyController : ControllerBase
             var stringToSign = HmacSigner.BuildStringToSign(timestamp, Request.Method, signingPath);
             var signature = HmacSigner.ComputeSignature(stringToSign, signingKey);
 
-            proxyRequest = ProxyRequestBuilder.Build(
-                Request, targetUrl, vibeClientId, timestamp, signature, vibeUserId, viaHeader, bodyBytes);
+                proxyRequest = ProxyRequestBuilder.Build(
+                    Request, targetUrl, vibeClientId, timestamp, signature, vibeUserId, viaHeader, bodyBytes, caller);
         }
 
         _logger.LogInformation(
