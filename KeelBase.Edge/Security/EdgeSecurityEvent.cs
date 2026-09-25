@@ -1,7 +1,11 @@
+using KeelBase.Edge.Identity;
+
 namespace KeelBase.Edge.Security;
+
 
 public record EdgeSecurityEvent
 {
+    // Existing basic fields
     public string EventId { get; init; } = Guid.NewGuid().ToString();
     public string EventType { get; init; } = string.Empty;
     public string? Provider { get; init; }
@@ -18,6 +22,18 @@ public record EdgeSecurityEvent
     public string? RequestMethod { get; init; }
     public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
     public Dictionary<string, object>? Metadata { get; init; }
+
+    // New audit fields as per TS-03 spec
+    public string RequestId { get; init; } = string.Empty; // unique request identifier
+    public CallerType? CallerType { get; init; }
+    public string? TenantClientId { get; init; }
+    public string? UserId { get; init; }
+    public string? AgentId { get; init; }
+    public string? StatementClass { get; init; } // read/write/ddl/admin/unknown
+    public string? Resource { get; init; } // collection or table name if known
+    public string? Outcome { get; init; } // Allowed/Refused/Error
+    public int? HttpStatus { get; init; }
+    public long? LatencyMs { get; init; }
 }
 
 public static class EdgeEventTypes

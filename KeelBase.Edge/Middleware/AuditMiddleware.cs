@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using KeelBase.Edge.Models;
 using KeelBase.Edge.Security;
+using KeelBase.Edge.Identity;
 
 namespace KeelBase.Edge.Middleware;
 
@@ -29,7 +30,15 @@ public class AuditMiddleware
         if (providerKey == null)
             return;
 
-        var userId = context.Items.TryGetValue("EdgeUserId", out var uid) && uid is int id ? (int?)id : null;
+        var caller = ResolvedCallerExtensions.From(context);
+        // Resolve caller fields safely, fallback to nulls where not present
+        var callerType = caller?.CallerType.ToString();
+        var tenantClientId = caller?.TenantClientId;
+        var userId = caller?.UserId;
+        var agentId = caller?.AgentId;
+        var permissionLevel = caller?.PermissionLevel.ToDbValue();
+
+        var userIdInt = context.Items.TryGetValue("EdgeUserId", out var uid) && uid is int id ? (int?)id : null;
         var permission = context.Items.TryGetValue("EdgePermission", out var perm) && perm is PermissionLevel pl ? (PermissionLevel?)pl : null;
         var method = context.Request.Method;
         var path = context.Request.Path.Value;
@@ -41,7 +50,7 @@ public class AuditMiddleware
             "method={Method} path={Path} status={StatusCode} elapsed={ElapsedMs}ms",
             allowed ? "ALLOW" : "DENY",
             providerKey,
-            userId,
+            userIdInt,
             permission?.ToDbValue() ?? "none",
             method,
             path,
@@ -52,7 +61,7 @@ public class AuditMiddleware
         {
             EventType = allowed ? EdgeEventTypes.AuthSuccess : EdgeEventTypes.AuthFailure,
             Provider = providerKey,
-            VibeUserId = userId,
+            VibeUserId = userIdInt,
             PermissionLevel = permission?.ToDbValue(),
             Operation = $"{method} {path}",
             Result = allowed ? "allow" : "deny",
@@ -64,7 +73,18 @@ public class AuditMiddleware
             {
                 ["status_code"] = statusCode,
                 ["elapsed_ms"] = sw.ElapsedMilliseconds
-            }
+            },
+            // New fields
+            RequestId = context.TraceIdentifier,
+            CallerType = caller?.CallerType,
+            TenantClientId = tenantClientId,
+            UserId = userId,
+            AgentId = agentId,
+            StatementClass = null, // not available here
+            Resource = null, // not available here
+            Outcome = allowed ? "Allowed" : "Refused",
+            HttpStatus = statusCode,
+            LatencyMs = sw.ElapsedMilliseconds
         };
 
         await _eventSink.EmitSafeAsync(secEvent, _logger);
