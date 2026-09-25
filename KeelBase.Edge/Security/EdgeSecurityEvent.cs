@@ -62,9 +62,10 @@ public static class EdgeDenyReasons
     public const string ClientInactive = "client_inactive";
     public const string PermissionCapExceeded = "permission_cap_exceeded";
     public const string SigningKeyNotFound = "signing_key_not_found";
-        public const string DdlNotGrantedToAgent = "ddl_not_granted_to_agent";
-        public const string DdlRequiresUser = "ddl_requires_user";
-        public const string DdlRefusedByGovernance = "ddl_refused_by_governance";
-        public const string UnrecognizedStatement = "unrecognized_statement";
-        public const string MultiStatementRejected = "multi_statement_rejected";
+    public const string DdlNotGrantedToAgent = "ddl_not_granted_to_agent";
+    public const string DdlRequiresUser = "ddl_requires_user";
+    public const string DdlRefusedByGovernance = "ddl_refused_by_governance";
+    public const string UnrecognizedStatement = "unrecognized_statement";
+    public const string MultiStatementRejected = "multi_statement_rejected";
+    public const string AnonNotAllowed = "anon_not_allowed";
 }

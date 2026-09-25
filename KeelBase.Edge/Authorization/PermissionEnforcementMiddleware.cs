@@ -36,6 +36,7 @@ public class PermissionEnforcementMiddleware
         var callerCheck = ResolvedCallerExtensions.From(context);
         if (callerCheck?.CallerType == CallerType.Anonymous)
         {
+            await EmitDeniedAsync(context, context.Items["EdgeProviderKey"] as string, PermissionLevel.None, "ANON_NOT_ALLOWED", EdgeDenyReasons.AnonNotAllowed);
             context.Response.StatusCode = 403;
             context.Response.ContentType = "application/json";
             await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(
@@ -128,8 +129,7 @@ public class PermissionEnforcementMiddleware
             return;
         }
 
-
-
+        // DDL gate logic added per TS-04
         var caller = ResolvedCallerExtensions.From(context);
         if (caller == null)
         {
