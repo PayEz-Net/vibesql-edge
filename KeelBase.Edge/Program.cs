@@ -13,6 +13,8 @@ using KeelBase.Edge.Tenancy.Implementations;
 using KeelBase.Edge.Middleware;
 using KeelBase.Edge.Security;
 using KeelBase.Edge.Governance;
+using KeelBase.Edge.Limits;
+using Microsoft.Extensions.Options;
 
 Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
 
@@ -37,7 +39,8 @@ builder.Services.AddSingleton<FederatedIdentityResolver>();
 builder.Services.AddSingleton<PermissionResolver>();
 
 builder.Services.AddSingleton<IClientCredentialProvider, DefaultClientCredentialProvider>();
-builder.Services.AddSingleton<ITenantRouter, SharedSchemaTenantRouter>();
+builder.Services.AddSingleton<ITierLimitStore, InMemoryTierLimitStore>();
+builder.Services.Configure<TierLimitOptions>(builder.Configuration.GetSection("KeelEdge:TierLimits"));
 builder.Services.AddSingleton<ISchemaGovernor, AllowAllSchemaGovernor>();
 
 builder.Services.AddHttpClient("PublicApi", (sp, client) =>
@@ -155,6 +158,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<IdentityResolutionMiddleware>();
 app.UseMiddleware<PermissionEnforcementMiddleware>();
+app.UseMiddleware<TierLimitMiddleware>();
 app.UseMiddleware<AuditMiddleware>();
 app.UseAuthorization();
 app.MapControllers();
