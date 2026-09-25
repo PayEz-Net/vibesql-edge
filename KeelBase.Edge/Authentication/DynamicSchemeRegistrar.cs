@@ -34,6 +34,22 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("EDGE_SCHEMES: Starting dynamic scheme registrar...");
+        var keelAuthConfig = _configuration.GetSection(KeelAuthOptions.SectionName).Get<KeelAuthOptions>();
+        if (keelAuthConfig != null && keelAuthConfig.IsConfigured &&
+            (string.IsNullOrWhiteSpace(keelAuthConfig.Issuer) ||
+             string.IsNullOrWhiteSpace(keelAuthConfig.Audience) ||
+             string.IsNullOrWhiteSpace(keelAuthConfig.DiscoveryUrl)))
+        {
+            throw new InvalidOperationException(
+                "EDGE_KEELAUTH_CONFIG_INVALID: KeelEdge:KeelAuth is configured but Issuer, Audience and DiscoveryUrl must all be set.");
+        }
+
+        if (string.IsNullOrWhiteSpace(keelAuthConfig?.AgentClaim))
+        {
+            _logger.LogInformation(
+                "EDGE_KEELAUTH: AgentClaim is not configured - agent recognition is off (no token will be treated as an agent).");
+        }
+
 
         await SeedBootstrapProvidersAsync();
         await RefreshSchemesAsync();
@@ -70,6 +86,24 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
             var bootstrapConfigs = _configuration.GetSection("KeelBase:BootstrapProviders")
                 .Get<BootstrapProviderConfig[]>() ?? [];
 
+            // TS-09: KeelAuth is the built-in identity provider, seeded through this same
+            // bootstrap path (the single loop below inserts it) instead of a second seeding path.
+            var keelAuthConfig = _configuration.GetSection(KeelAuthOptions.SectionName).Get<KeelAuthOptions>();
+            if (keelAuthConfig != null && keelAuthConfig.IsConfigured)
+            {
+                bootstrapConfigs = bootstrapConfigs
+                    .Where(c => !string.Equals(c.ProviderKey, KeelAuthOptions.ProviderKey, StringComparison.Ordinal))
+                    .Append(new BootstrapProviderConfig
+                    {
+                        ProviderKey = KeelAuthOptions.ProviderKey,
+                        DisplayName = "KeelAuth",
+                        Issuer = keelAuthConfig.Issuer,
+                        DiscoveryUrl = keelAuthConfig.DiscoveryUrl,
+                        Audience = keelAuthConfig.Audience,
+                        IsBootstrap = true
+                    })
+                    .ToArray();
+            }
             foreach (var config in bootstrapConfigs)
             {
                 if (string.IsNullOrEmpty(config.ProviderKey) || string.IsNullOrEmpty(config.Issuer))

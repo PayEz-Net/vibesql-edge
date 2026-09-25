@@ -41,6 +41,7 @@ builder.Services.AddSingleton<PermissionResolver>();
 builder.Services.AddSingleton<IClientCredentialProvider, DefaultClientCredentialProvider>();
 builder.Services.AddSingleton<ITierLimitStore, InMemoryTierLimitStore>();
 builder.Services.Configure<TierLimitOptions>(builder.Configuration.GetSection("KeelEdge:TierLimits"));
+builder.Services.Configure<KeelAuthOptions>(builder.Configuration.GetSection(KeelAuthOptions.SectionName));
 builder.Services.AddSingleton<ISchemaGovernor, AllowAllSchemaGovernor>();
 
 builder.Services.AddHttpClient("PublicApi", (sp, client) =>
