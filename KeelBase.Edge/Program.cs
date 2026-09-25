@@ -142,6 +142,8 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
+builder.Services.AddHealthChecks().AddCheck("edgedb", new KeelBase.Edge.Health.EdgeDbHealthCheck(builder.Configuration.GetConnectionString("EdgeDb") ?? string.Empty));
+
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
@@ -164,6 +166,29 @@ app.UseMiddleware<PermissionEnforcementMiddleware>();
 app.UseMiddleware<TierLimitMiddleware>();
 app.UseMiddleware<AuditMiddleware>();
 app.UseAuthorization();
+app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = _ => false,
+    ResponseWriter = static (context, _) =>
+    {
+        context.Response.ContentType = "application/json";
+        return context.Response.WriteAsync("{\"status\":\"alive\"}");
+    }
+}).AllowAnonymous();
+
+app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = _ => true,
+    ResponseWriter = static (context, report) =>
+    {
+        context.Response.ContentType = "application/json";
+        var payload = report.Status == Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Healthy
+            ? "{\"status\":\"ready\"}"
+            : "{\"status\":\"degraded\",\"reason\":\"db\"}";
+        return context.Response.WriteAsync(payload);
+    }
+}).AllowAnonymous();
+
 app.MapControllers();
 
 app.Run();
