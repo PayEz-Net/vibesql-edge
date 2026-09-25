@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: keelbase-edge
+  namespace: internal-services
+  labels:
+    app: keelbase-edge
+spec:
+  type: ClusterIP
+  selector:
+    app: keelbase-edge
+  ports:
+    - name: http
+      port: 5100
+      targetPort: 5100
+      protocol: TCP
