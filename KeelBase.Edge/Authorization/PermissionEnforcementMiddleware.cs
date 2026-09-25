@@ -1,5 +1,7 @@
 using System.Text.Json;
 using KeelBase.Edge.Models;
+using KeelBase.Edge.Governance;
+using KeelBase.Edge.Identity;
 using KeelBase.Edge.Security;
 
 namespace KeelBase.Edge.Authorization;
@@ -111,6 +113,60 @@ public class PermissionEnforcementMiddleware
             await context.Response.WriteAsync(JsonSerializer.Serialize(resp));
             return;
         }
+
+        // DDL gate logic added per TS-04
+        var caller = ResolvedCallerExtensions.From(context);
+        if (caller == null)
+        {
+            // If we cannot resolve caller, fallback to existing logic (deny?)
+            await _next(context);
+            return;
+        }
+
+        // Determine if the statement is DDL based on requiredLevel mapping (Schema permission)
+        bool isDdl = requiredLevel == PermissionLevel.Schema;
+        if (isDdl)
+        {
+            // Agent not allowed DDL
+            if (caller.CallerType == CallerType.Agent)
+            {
+                await EmitDeniedAsync(context, providerKey, permResult.EffectiveLevel, "DDL_NOT_GRANTED_TO_AGENT", EdgeDenyReasons.DdlNotGrantedToAgent);
+                context.Response.StatusCode = 403;
+                context.Response.ContentType = "application/json";
+                var denied = ApiResponse<object>.FailureResponse(
+                    "DDL not granted to agents", "DDL_NOT_GRANTED_TO_AGENT",
+                    requestId: context.TraceIdentifier);
+                await context.Response.WriteAsync(JsonSerializer.Serialize(denied));
+                return;
+            }
+            // Non-user non-agent (e.g., Service, Anonymous) not allowed DDL
+            if (caller.CallerType != CallerType.User)
+            {
+                await EmitDeniedAsync(context, providerKey, permResult.EffectiveLevel, "DDL_REQUIRES_USER", EdgeDenyReasons.DdlRequiresUser);
+                context.Response.StatusCode = 403;
+                context.Response.ContentType = "application/json";
+                var denied = ApiResponse<object>.FailureResponse(
+                    "DDL requires a signed‑in user", "DDL_REQUIRES_USER",
+                    requestId: context.TraceIdentifier);
+                await context.Response.WriteAsync(JsonSerializer.Serialize(denied));
+                return;
+            }
+            // User caller – invoke governor
+            var governor = context.RequestServices.GetRequiredService<ISchemaGovernor>();
+            var decision = await governor.CheckDdlAsync(caller, ct: context.RequestAborted);
+            if (!decision.Allowed)
+            {
+                await EmitDeniedAsync(context, providerKey, permResult.EffectiveLevel, "DDL_REFUSED_BY_GOVERNANCE", EdgeDenyReasons.DdlRefusedByGovernance);
+                context.Response.StatusCode = 403;
+                context.Response.ContentType = "application/json";
+                var denied = ApiResponse<object>.FailureResponse(
+                    decision.Reason ?? "DDL refused by governance", "DDL_REFUSED_BY_GOVERNANCE",
+                    requestId: context.TraceIdentifier);
+                await context.Response.WriteAsync(JsonSerializer.Serialize(denied));
+                return;
+            }
+        }
+
 
         context.Items["EdgePermission"] = permResult.EffectiveLevel;
 

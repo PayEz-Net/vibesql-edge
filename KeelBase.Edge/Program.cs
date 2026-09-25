@@ -12,6 +12,7 @@ using KeelBase.Edge.Authorization;
 using KeelBase.Edge.Tenancy.Implementations;
 using KeelBase.Edge.Middleware;
 using KeelBase.Edge.Security;
+using KeelBase.Edge.Governance;
 
 Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
 
@@ -37,7 +38,7 @@ builder.Services.AddSingleton<PermissionResolver>();
 
 builder.Services.AddSingleton<IClientCredentialProvider, DefaultClientCredentialProvider>();
 builder.Services.AddSingleton<ITenantRouter, SharedSchemaTenantRouter>();
-builder.Services.AddSingleton<ISecurityEventSink, ConsoleSecurityEventSink>();
+builder.Services.AddSingleton<ISchemaGovernor, AllowAllSchemaGovernor>();
 
 builder.Services.AddHttpClient("PublicApi", (sp, client) =>
 {
