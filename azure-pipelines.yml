@@ -1,0 +1,77 @@
+# keelbase-edge pipeline: Build -> Push (ACR) -> Deploy (AKS).
+#
+# Required ADO variable group: 'keelbase-edge-deploy'
+# (documented here only - Jon creates it in ADO; this file does not create it):
+#   ACR_REGISTRY            container registry host, e.g. payezcontainers.azurecr.io (known value)
+#   AKS_CLUSTER             AKS cluster name
+#   AKS_RESOURCE_GROUP      resource group that holds the AKS cluster
+#   ACR_SERVICE_CONNECTION  service connection with AcrPush, used by 'az acr login'
+#   AKS_SERVICE_CONNECTION  service connection with access to the AKS cluster
+#
+# Trigger is intentionally manual. Automated deploys require Jon's sign-off.
+
+trigger: none
+
+variables:
+  - group: keelbase-edge-deploy
+  - name: IMAGE_TAG
+    value: $(Build.BuildId)
+
+stages:
+  - stage: Build
+    displayName: Build image
+    jobs:
+      - job: BuildImage
+        displayName: Build keelbase-edge image
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - script: docker build -t $(ACR_REGISTRY)/keelbase-edge:$(IMAGE_TAG) .
+            displayName: docker build ($(IMAGE_TAG))
+          - script: docker build -t $(ACR_REGISTRY)/keelbase-edge:latest .
+            displayName: docker build (latest)
+
+  - stage: Push
+    displayName: Push image to ACR
+    dependsOn: Build
+    jobs:
+      - job: PushImage
+        displayName: Push both tags
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: az acr login + docker push
+            inputs:
+              azureSubscription: $(ACR_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                # 'az acr login --name' wants the registry name, not the fully qualified host
+                az acr login --name "${ACR_REGISTRY%%.azurecr.io}"
+                docker push $(ACR_REGISTRY)/keelbase-edge:$(IMAGE_TAG)
+                docker push $(ACR_REGISTRY)/keelbase-edge:latest
+
+  - stage: Deploy
+    displayName: Deploy to AKS
+    dependsOn: Push
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: DeployToAks
+        displayName: Roll out to internal-services
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: kubectl set image + rollout status
+            inputs:
+              azureSubscription: $(AKS_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az aks get-credentials --name $(AKS_CLUSTER) --resource-group $(AKS_RESOURCE_GROUP) --overwrite-existing
+                kubectl set image deployment/keelbase-edge keelbase-edge=$(ACR_REGISTRY)/keelbase-edge:$(IMAGE_TAG) -n internal-services
+                kubectl rollout status deployment/keelbase-edge -n internal-services --timeout=120s
+                # No rollback step on purpose: if the rollout fails this stage fails and Jon decides rollback.
