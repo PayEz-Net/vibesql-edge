@@ -129,6 +129,18 @@ public class IdentityResolutionMiddleware
         context.Items["EdgeRoles"] = roles;
         context.Items["EdgeEmail"] = email;
 
+        // Build ResolvedCaller (currently only User info) and store in context
+            var resolvedCaller = new ResolvedCaller(
+                CallerType.User,
+                providerKey,
+                subject,
+                identity.VibeUserId.ToString(),
+                null,
+                null,
+                PermissionLevel.None,
+                roles);
+        context.Items["EdgeCaller"] = resolvedCaller;
+
         await _next(context);
     }
 
