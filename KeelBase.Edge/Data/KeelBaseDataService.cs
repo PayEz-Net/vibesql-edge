@@ -93,6 +93,17 @@ public class KeelBaseDataService
             CREATE INDEX IF NOT EXISTS idx_federated_lookup ON vibe_system.federated_identities (provider_key, external_subject);
             CREATE INDEX IF NOT EXISTS idx_federated_vibe_user ON vibe_system.federated_identities (vibe_user_id);
 
+            CREATE TABLE IF NOT EXISTS vibe_system.edge_publishable_keys (
+                id                  SERIAL PRIMARY KEY,
+                key_prefix          VARCHAR(20) NOT NULL,
+                key_hash            VARCHAR(64) NOT NULL UNIQUE,
+                tenant_client_id    VARCHAR(100) NOT NULL,
+                created_at          TIMESTAMPTZ DEFAULT NOW(),
+                revoked_at          TIMESTAMPTZ
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pub_key_prefix ON vibe_system.edge_publishable_keys (key_prefix);
+
             CREATE TABLE IF NOT EXISTS vibe_system.edge_client_credentials (
                 id              SERIAL PRIMARY KEY,
                 client_id       VARCHAR(100) NOT NULL UNIQUE,
@@ -519,4 +530,38 @@ public class KeelBaseDataService
     }
 
     #endregion
+
+    #region PublishableKeys
+
+    public async Task<PublishableKey?> GetPublishableKeyByPrefixAsync(string keyPrefix)
+    {
+        using var conn = CreateConnection();
+        return await conn.QueryFirstOrDefaultAsync<PublishableKey>(
+            "SELECT * FROM vibe_system.edge_publishable_keys WHERE key_prefix = @KeyPrefix AND revoked_at IS NULL",
+            new { KeyPrefix = keyPrefix });
+    }
+
+    public async Task<PublishableKey> CreatePublishableKeyAsync(string keyPrefix, string keyHash, string tenantClientId)
+    {
+        using var conn = CreateConnection();
+        return await conn.QuerySingleAsync<PublishableKey>(
+            """
+            INSERT INTO vibe_system.edge_publishable_keys (key_prefix, key_hash, tenant_client_id)
+            VALUES (@KeyPrefix, @KeyHash, @TenantClientId)
+            RETURNING *
+            """,
+            new { KeyPrefix = keyPrefix, KeyHash = keyHash, TenantClientId = tenantClientId });
+    }
+
+    public async Task<bool> RevokePublishableKeyAsync(int id)
+    {
+        using var conn = CreateConnection();
+        var rows = await conn.ExecuteAsync(
+            "UPDATE vibe_system.edge_publishable_keys SET revoked_at = NOW() WHERE id = @Id AND revoked_at IS NULL",
+            new { Id = id });
+        return rows > 0;
+    }
+
+    #endregion
 }
+

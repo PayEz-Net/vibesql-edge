@@ -32,6 +32,20 @@ public class PermissionEnforcementMiddleware
             return;
         }
 
+        // Anonymous publishable-key callers are refused everything (checked before IsAuthenticated gate)
+        var callerCheck = ResolvedCallerExtensions.From(context);
+        if (callerCheck?.CallerType == CallerType.Anonymous)
+        {
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse(
+                    "Anonymous callers are not permitted to execute queries.",
+                    "ANON_NOT_ALLOWED",
+                    requestId: context.TraceIdentifier)));
+            return;
+        }
+
         if (context.User.Identity?.IsAuthenticated != true)
         {
             await _next(context);
@@ -114,7 +128,8 @@ public class PermissionEnforcementMiddleware
             return;
         }
 
-        // DDL gate logic added per TS-04
+
+
         var caller = ResolvedCallerExtensions.From(context);
         if (caller == null)
         {

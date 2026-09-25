@@ -2,6 +2,8 @@ using System.Text.Json;
 using KeelBase.Edge.Authentication;
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Models;
+using System.Security.Cryptography;
+using KeelBase.Edge.Data.Models;
 using KeelBase.Edge.Security;
 using KeelBase.Edge.Tenancy;
 
@@ -34,6 +36,12 @@ public class IdentityResolutionMiddleware
 
         if (context.User.Identity?.IsAuthenticated != true)
         {
+            var pubKey = context.Request.Headers["X-Keel-Publishable-Key"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(pubKey))
+            {
+                await HandlePublishableKeyAsync(context, pubKey);
+                return;
+            }
             await _next(context);
             return;
         }
@@ -155,6 +163,67 @@ public class IdentityResolutionMiddleware
                 "TENANT_INACTIVE",
                 requestId: context.TraceIdentifier);
             await context.Response.WriteAsync(JsonSerializer.Serialize(tenantResponse));
+            return;
+        }
+        context.Items["EdgeTenantRoute"] = route;
+
+        await _next(context);
+    }
+
+    private async Task HandlePublishableKeyAsync(HttpContext context, string pubKey)
+    {
+        if (!pubKey.StartsWith("kb_pub_") || pubKey.Length < 15)
+        {
+            context.Response.StatusCode = 401;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse("Invalid publishable key.", "PUBLISHABLE_KEY_INVALID", requestId: context.TraceIdentifier)));
+            return;
+        }
+
+        var random32 = pubKey["kb_pub_".Length..];
+        var keyPrefix = random32.Length >= 8 ? random32[..8] : random32;
+
+        var dataService = context.RequestServices.GetRequiredService<KeelBaseDataService>();
+        var record = await dataService.GetPublishableKeyByPrefixAsync(keyPrefix);
+
+        if (record == null)
+        {
+            context.Response.StatusCode = 401;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse("Unknown or revoked publishable key.", "PUBLISHABLE_KEY_INVALID", requestId: context.TraceIdentifier)));
+            return;
+        }
+
+        var hash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(pubKey))).ToLowerInvariant();
+        if (hash != record.KeyHash)
+        {
+            context.Response.StatusCode = 401;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse("Unknown or revoked publishable key.", "PUBLISHABLE_KEY_INVALID", requestId: context.TraceIdentifier)));
+            return;
+        }
+
+        var caller = new ResolvedCaller(
+            CallerType.Anonymous,
+            null, null, null, null,
+            record.TenantClientId,
+            PermissionLevel.None,
+            Array.Empty<string>());
+
+        context.Items["EdgeCaller"] = caller;
+        context.Items["EdgeProviderKey"] = record.TenantClientId;
+
+        var tenantRouter = context.RequestServices.GetRequiredService<KeelBase.Edge.Tenancy.ITenantRouter>();
+        var route = await tenantRouter.ResolveAsync(record.TenantClientId, context.RequestAborted);
+        if (!route.IsActive)
+        {
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse("This app (tenant) is not active yet.", "TENANT_INACTIVE", requestId: context.TraceIdentifier)));
             return;
         }
         context.Items["EdgeTenantRoute"] = route;
