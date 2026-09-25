@@ -1,12 +1,10 @@
 using System.Text.Json;
 
-
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Models;
 using System.Security.Cryptography;
 using KeelBase.Edge.Data.Models;
 using KeelBase.Edge.Authentication;
-using KeelBase.Edge.Security;
 using KeelBase.Edge.Security;
 using KeelBase.Edge.Tenancy;
 using Microsoft.Extensions.Options;
@@ -15,20 +13,20 @@ namespace KeelBase.Edge.Identity;
 
 public class IdentityResolutionMiddleware
 {
-        private readonly RequestDelegate _next;
-        private readonly ILogger<IdentityResolutionMiddleware> _logger;
-        private readonly ISecurityEventSink _eventSink;
-        private readonly ITenantRouter _tenantRouter;
-        private readonly KeelAuthOptions _keelAuth;
+    private readonly RequestDelegate _next;
+    private readonly ILogger<IdentityResolutionMiddleware> _logger;
+    private readonly ISecurityEventSink _eventSink;
+    private readonly ITenantRouter _tenantRouter;
+    private readonly KeelAuthOptions _keelAuth;
 
-        public IdentityResolutionMiddleware(RequestDelegate next, ILogger<IdentityResolutionMiddleware> logger, ISecurityEventSink eventSink, ITenantRouter tenantRouter, IOptions<KeelAuthOptions> keelAuth)
-        {
-            _next = next;
-            _logger = logger;
-            _eventSink = eventSink;
-            _tenantRouter = tenantRouter;
-            _keelAuth = keelAuth.Value;
-        }
+    public IdentityResolutionMiddleware(RequestDelegate next, ILogger<IdentityResolutionMiddleware> logger, ISecurityEventSink eventSink, ITenantRouter tenantRouter, IOptions<KeelAuthOptions> keelAuth)
+    {
+        _next = next;
+        _logger = logger;
+        _eventSink = eventSink;
+        _tenantRouter = tenantRouter;
+        _keelAuth = keelAuth.Value;
+    }
 
     public async Task InvokeAsync(HttpContext context)
     {
@@ -146,41 +144,41 @@ public class IdentityResolutionMiddleware
         context.Items["EdgeRoles"] = roles;
         context.Items["EdgeEmail"] = email;
 
-            var callerType = CallerType.User;
-            string? callerUserId = identity.VibeUserId.ToString();
-            string? agentId = null;
+        var callerType = CallerType.User;
+        string? callerUserId = identity.VibeUserId.ToString();
+        string? agentId = null;
 
-            if (string.Equals(providerKey, KeelAuthOptions.ProviderKey, StringComparison.Ordinal) &&
-                !string.IsNullOrEmpty(_keelAuth.AgentClaim))
+        if (string.Equals(providerKey, KeelAuthOptions.ProviderKey, StringComparison.Ordinal) &&
+            !string.IsNullOrEmpty(_keelAuth.AgentClaim))
+        {
+            agentId = ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentClaim);
+            if (!string.IsNullOrEmpty(agentId))
             {
-                agentId = ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentClaim);
-                if (!string.IsNullOrEmpty(agentId))
-                {
-                    callerType = CallerType.Agent;
-                    callerUserId = string.IsNullOrEmpty(_keelAuth.AgentOwnerClaim)
-                        ? null
-                        : ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentOwnerClaim);
+                callerType = CallerType.Agent;
+                callerUserId = string.IsNullOrEmpty(_keelAuth.AgentOwnerClaim)
+                    ? null
+                    : ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentOwnerClaim);
 
-                    if (!string.IsNullOrEmpty(_keelAuth.AgentOwnerClaim) && string.IsNullOrEmpty(callerUserId))
-                    {
-                        _logger.LogWarning(
-                            "EDGE_IDENTITY: Agent token for provider {Provider} has no owner claim {OwnerClaim}",
-                            providerKey, _keelAuth.AgentOwnerClaim);
-                    }
+                if (!string.IsNullOrEmpty(_keelAuth.AgentOwnerClaim) && string.IsNullOrEmpty(callerUserId))
+                {
+                    _logger.LogWarning(
+                        "EDGE_IDENTITY: Agent token for provider {Provider} has no owner claim {OwnerClaim}",
+                        providerKey, _keelAuth.AgentOwnerClaim);
                 }
             }
+        }
 
-            // Build ResolvedCaller and store in context
-            var resolvedCaller = new ResolvedCaller(
-                callerType,
-                providerKey,
-                subject,
-                callerUserId,
-                agentId,
-                null,
-                PermissionLevel.None,
-                roles);
-            context.Items["EdgeCaller"] = resolvedCaller;
+        // Build ResolvedCaller and store in context
+        var resolvedCaller = new ResolvedCaller(
+            callerType,
+            providerKey,
+            subject,
+            callerUserId,
+            agentId,
+            null,
+            PermissionLevel.None,
+            roles);
+        context.Items["EdgeCaller"] = resolvedCaller;
 
         var route = await _tenantRouter.ResolveAsync(providerKey, context.RequestAborted);
         if (!route.IsActive)
