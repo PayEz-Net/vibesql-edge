@@ -26,3 +26,24 @@ Build succeeded.
 ```
 
 **Build rc**: 0 Error(s)
+
+## Files changed
+- KeelBase.Edge/Meta/MetaController.cs (lines 1-50)
+
+## Build output (last 5 lines)
+```
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  KeelBase.Edge -> C:\Users\jon-local\AgentRepos\RigPert\keelbase-edge\KeelBase.Edge\bin\Debug\net9.0\KeelBase.Edge.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+```
+
+## Build rc
+rc: 0
+
+## Tenant schema scoping
+- Known: no tenant‑specific schema mapping (SharedSchema tenant router)
+- Endpoints return 501 META_TENANT_SCHEMAS_UNKNOWN
