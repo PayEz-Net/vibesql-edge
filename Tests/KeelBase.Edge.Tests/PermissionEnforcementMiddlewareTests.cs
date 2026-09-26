@@ -228,4 +228,91 @@ public class PermissionEnforcementMiddlewareTests
         ctx.Response.StatusCode.Should().Be(403);
         (await Body(ctx)).Should().Contain("DDL_NOT_GRANTED_TO_AGENT");
     }
+
+    // ── S3 WIRING (QAPert 65160 gap): TierLimitMiddleware's per-class counters depend on
+    // PermissionEnforcementMiddleware SETTING Items["EdgeStatementClass"]. My F5 tests set that item
+    // themselves, so they cannot catch a mutant that deletes this assignment. These rows assert the
+    // wiring at its SOURCE: they never set the item, and read it after the middleware runs. ────────────
+
+    [Fact]
+    public async Task S3_PEM_sets_EdgeStatementClass_ddl_for_a_user_schema_ddl()
+    {
+        var (resolver, _) = Resolver("schema");
+        var sink = new Mock<ISecurityEventSink>();
+        var ctx = Context("POST", "/v1/query", "{\"sql\":\"CREATE TABLE t (id int)\"}", CallerType.User);
+        ctx.Items.Remove("EdgeStatementClass");   // never pre-set: only the middleware may write it
+        Wire(ctx, resolver);
+
+        await Middleware(sink).InvokeAsync(ctx);
+
+        ctx.Response.StatusCode.Should().NotBe(403, "a user with Schema authority is allowed DDL");
+        ctx.Items["EdgeStatementClass"].Should().Be("ddl",
+            "S3: PEM must SET EdgeStatementClass so TierLimitMiddleware's SchemaOpsPerDay counter can trip; " +
+            "deleting that assignment otherwise breaks no test");
+    }
+
+    [Fact]
+    public async Task S3_PEM_sets_EdgeStatementClass_read_for_a_select()
+    {
+        var (resolver, _) = Resolver("read");
+        var sink = new Mock<ISecurityEventSink>();
+        var ctx = Context("POST", "/v1/query", "{\"sql\":\"SELECT 1\"}", CallerType.User);
+        ctx.Items.Remove("EdgeStatementClass");
+        Wire(ctx, resolver);
+
+        await Middleware(sink).InvokeAsync(ctx);
+
+        ctx.Items["EdgeStatementClass"].Should().Be("read");
+    }
+
+    [Fact]
+    public async Task S3_PEM_sets_EdgeStatementClass_write_for_an_insert()
+    {
+        var (resolver, _) = Resolver("write");
+        var sink = new Mock<ISecurityEventSink>();
+        var ctx = Context("POST", "/v1/query", "{\"sql\":\"INSERT INTO t (id) VALUES (1)\"}", CallerType.User);
+        ctx.Items.Remove("EdgeStatementClass");
+        Wire(ctx, resolver);
+
+        await Middleware(sink).InvokeAsync(ctx);
+
+        ctx.Items["EdgeStatementClass"].Should().Be("write");
+    }
+
+    // ── S3 CHAIN: the value PEM writes must actually drive TierLimitMiddleware's SchemaOps counter ────
+    // This is the end-to-end row QAPert offered as the alternative: PEM sets the class, then the very
+    // same context goes through the real TierLimitMiddleware with a SchemaOpsPerDay limit of 0, and the
+    // request must be refused 429. If PEM stops writing the class, the counter never trips and this fails.
+    [Fact]
+    public async Task S3_PEM_to_TierLimit_chain_trips_SchemaOps_on_a_ddl()
+    {
+        var (resolver, _) = Resolver("schema");
+        var sink = new Mock<ISecurityEventSink>();
+        var ctx = Context("POST", "/v1/query", "{\"sql\":\"CREATE TABLE t (id int)\"}", CallerType.User);
+        ctx.Items.Remove("EdgeStatementClass");
+        ctx.Items["EdgeTenantRoute"] = new KeelBase.Edge.Tenancy.TenantRoute(
+            Provider, true, KeelBase.Edge.Tenancy.StorageKind.SharedSchema);
+
+        var limits = new KeelBase.Edge.Limits.InMemoryTierLimitStore();
+        var services = new Mock<IServiceProvider>();
+        services.Setup(s => s.GetService(typeof(PermissionResolver))).Returns(resolver);
+        services.Setup(s => s.GetService(typeof(ISchemaGovernor))).Returns(new AllowAllSchemaGovernor());
+        services.Setup(s => s.GetService(typeof(KeelBase.Edge.Limits.ITierLimitStore))).Returns(limits);
+        services.Setup(s => s.GetService(typeof(Microsoft.Extensions.Options.IOptions<KeelBase.Edge.Limits.TierLimitOptions>)))
+            .Returns(Microsoft.Extensions.Options.Options.Create(new KeelBase.Edge.Limits.TierLimitOptions
+            {
+                ApiCallsPerDay = 1000, SchemaOpsPerDay = 0
+            }));
+        ctx.RequestServices = services.Object;
+
+        await Middleware(sink).InvokeAsync(ctx);
+        ctx.Response.StatusCode.Should().NotBe(403, "the DDL itself is permitted for this user");
+
+        var tier = new KeelBase.Edge.Middleware.TierLimitMiddleware(
+            _ => Task.CompletedTask, Microsoft.Extensions.Logging.Abstractions.NullLogger<KeelBase.Edge.Middleware.TierLimitMiddleware>.Instance);
+        await tier.InvokeAsync(ctx);
+
+        ctx.Response.StatusCode.Should().Be(429,
+            "S3 chain: the class PEM wrote must reach TierLimitMiddleware, or the SchemaOps counter never trips");
+    }
 }
