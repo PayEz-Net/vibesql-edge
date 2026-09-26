@@ -36,6 +36,7 @@ public class KeelBaseDataService : IKeelBaseDataService
                 audience                VARCHAR(500) NOT NULL,
                 is_active               BOOLEAN DEFAULT TRUE,
                 is_bootstrap            BOOLEAN DEFAULT FALSE,
+                is_first_party          BOOLEAN DEFAULT FALSE,
                 auto_provision          BOOLEAN DEFAULT FALSE,
                 provision_default_role  VARCHAR(100),
                 subject_claim_path      VARCHAR(100) DEFAULT 'sub',
@@ -115,6 +116,10 @@ public class KeelBaseDataService : IKeelBaseDataService
             );
 
             CREATE SEQUENCE IF NOT EXISTS vibe_system.federated_user_id_seq START WITH 10000;
+
+            -- Idempotent migrations for columns added after a table already exists (CREATE TABLE IF NOT
+            -- EXISTS does not add a column to an existing table). MUST-2 (QAPert 65122).
+            ALTER TABLE vibe_system.oidc_providers ADD COLUMN IF NOT EXISTS is_first_party BOOLEAN DEFAULT FALSE;
             """;
 
         using var conn = CreateConnection();
@@ -164,11 +169,11 @@ public class KeelBaseDataService : IKeelBaseDataService
         await conn.ExecuteAsync("""
             INSERT INTO vibe_system.oidc_providers
                 (provider_key, display_name, issuer, discovery_url, audience, is_active, is_bootstrap,
-                 auto_provision, provision_default_role, subject_claim_path, role_claim_path,
+                 is_first_party, auto_provision, provision_default_role, subject_claim_path, role_claim_path,
                  email_claim_path, clock_skew_seconds)
             VALUES
                 (@ProviderKey, @DisplayName, @Issuer, @DiscoveryUrl, @Audience, @IsActive, @IsBootstrap,
-                 @AutoProvision, @ProvisionDefaultRole, @SubjectClaimPath, @RoleClaimPath,
+                 @IsFirstParty, @AutoProvision, @ProvisionDefaultRole, @SubjectClaimPath, @RoleClaimPath,
                  @EmailClaimPath, @ClockSkewSeconds)
             """, provider);
 

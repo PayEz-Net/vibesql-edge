@@ -72,4 +72,5 @@ public static class EdgeDenyReasons
     public const string OperationUnclassifiable = "operation_unclassifiable";
     public const string MalformedSql = "malformed_sql";
     public const string AgentOwnerMissing = "agent_owner_missing";
+    public const string AgentProviderNotTrusted = "agent_provider_not_trusted";
 }

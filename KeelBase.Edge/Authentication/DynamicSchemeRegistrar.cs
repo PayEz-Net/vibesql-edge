@@ -61,6 +61,21 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                 "EDGE_KEELAUTH: not configured - agent recognition is off (no token will be treated as an agent).");
         }
 
+        // MUST-4 (NightHawk 65130 SHOULD, promoted BAPert 65133): a first-party/agents provider added via
+        // KeelBase:BootstrapProviders while KeelEdge:KeelAuth is unset leaves AgentClaim null, so every
+        // agent token resolves as a User - and with AllowAllSchemaGovernor that means DDL is ALLOWED. This
+        // is the R14 outcome by another route, so it fails startup rather than running open.
+        if (string.IsNullOrWhiteSpace(keelAuthConfig?.AgentClaim)
+            && (_configuration.GetSection("KeelBase:BootstrapProviders").Get<BootstrapProviderConfig[]>() ?? [])
+                .Any(c => c.IsFirstParty))
+        {
+            throw new InvalidOperationException(
+                "EDGE_AGENT_RECOGNITION_UNCONFIGURED: a first-party provider is configured " +
+                "(KeelBase:BootstrapProviders with IsFirstParty=true) but KeelEdge:KeelAuth:AgentClaim is not " +
+                "set, so no token can be recognised as an agent and agent DDL would not be refused. Set " +
+                "KeelEdge:KeelAuth:AgentClaim (and AgentOwnerClaim), or remove the first-party flag.");
+        }
+
 
         await SeedBootstrapProvidersAsync();
         await RefreshSchemesAsync();
@@ -87,13 +102,16 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
         await RefreshSchemesAsync();
     }
 
-    /// <summary>R17 (QAPert 65084): http metadata is allowed when the operator sets the knob, or for localhost.
-    /// This is what lets dev-93 (http://10.0.0.93:32785) and in-cluster Azure validate tokens.</summary>
-    private bool AllowHttpMetadata(string discoveryUrl)
+    /// <summary>MUST-6 (BAPert 65125 item 6): http metadata is allowed ONLY for a first-party/bootstrap
+    /// provider (dev-93's IdP, in-cluster Azure). A customer IdP stays https-only in every environment,
+    /// regardless of the knob - so the knob cannot be used to weaken a tenant's TLS.</summary>
+    private bool AllowHttpMetadata(string discoveryUrl, bool isFirstParty)
     {
-        if (_configuration.GetValue("KeelEdge:KeelAuth:RequireHttpsMetadata", true) == false)
+        if (discoveryUrl.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase))
             return true;
-        return discoveryUrl.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase);
+        if (!isFirstParty)
+            return false;
+        return _configuration.GetValue("KeelEdge:KeelAuth:RequireHttpsMetadata", true) == false;
     }
 
     private async Task SeedBootstrapProvidersAsync()
@@ -120,10 +138,13 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                         Issuer = keelAuthConfig.Issuer,
                         DiscoveryUrl = keelAuthConfig.DiscoveryUrl,
                         Audience = keelAuthConfig.Audience,
-                        IsBootstrap = true
+                        IsBootstrap = true,
+                        // KeelAuth is first-party by construction (MUST-2).
+                        IsFirstParty = true
                     })
                     .ToArray();
             }
+
             foreach (var config in bootstrapConfigs)
             {
                 if (string.IsNullOrEmpty(config.ProviderKey) || string.IsNullOrEmpty(config.Issuer))
@@ -141,6 +162,7 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                     DiscoveryUrl = config.DiscoveryUrl,
                     Audience = config.Audience,
                     IsBootstrap = config.IsBootstrap,
+                    IsFirstParty = config.IsFirstParty,
                     IsActive = true,
                     ClockSkewSeconds = config.ClockSkewSeconds
                 };
@@ -199,10 +221,8 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                         RoleClaimType = provider.RoleClaimPath,
                         AuthenticationType = schemeName
                     },
-                    // R17 (QAPert 65084): HTTPS enforcement was keyed on the literal "http://localhost".
-                    // dev-93's IdP is http://10.0.0.93:32785 and in-cluster Azure is http too, so every
-                    // token was rejected before the walk. Allow http when the knob is set OR for localhost.
-                    RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl)
+                    // MUST-6 (BAPert 65125 item 6): http metadata only for a first-party provider.
+                    RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl, provider.IsFirstParty)
                 };
 
                 optionsCache.TryRemove(schemeName);

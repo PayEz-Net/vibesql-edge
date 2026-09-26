@@ -217,5 +217,10 @@ public class BootstrapProviderConfig
     public string DiscoveryUrl { get; set; } = string.Empty;
     public string Audience { get; set; } = string.Empty;
     public bool IsBootstrap { get; set; } = true;
+
+    /// <summary>MUST-2 (BAPert 65125): a provider WE operate (KeelAuth / the agents issuer). Agent
+    /// recognition and the owner claim are trusted only from a first-party provider.</summary>
+    public bool IsFirstParty { get; set; }
+
     public int ClockSkewSeconds { get; set; } = 60;
 }

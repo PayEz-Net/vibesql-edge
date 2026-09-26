@@ -152,11 +152,40 @@ public class IdentityResolutionMiddleware
         // agents-issuer provider added under any other key resolved every agent as CallerType.User, and
         // with AllowAllSchemaGovernor DDL was then allowed. R15: recognition was presence-only, so a service
         // token carrying user_type also matched. Recognise on the CLAIM VALUE, for ANY provider.
+        // MUST-2 (QAPert 65122, BAPert 65125): recognition runs for any provider, but the OWNER claim only
+        // comes from a FIRST-PARTY provider - a customer IdP must not be able to mint user_type=agent with
+        // an arbitrary owner_user_id and have Edge assert it upstream. Deny such a token outright.
         if (!string.IsNullOrEmpty(_keelAuth.AgentClaim))
         {
             var agentClaimValue = ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentClaim);
             var isAgent = !string.IsNullOrEmpty(agentClaimValue) &&
                           string.Equals(agentClaimValue, _keelAuth.AgentClaimValue, StringComparison.OrdinalIgnoreCase);
+
+            if (isAgent && !provider.IsFirstParty)
+            {
+                _logger.LogWarning(
+                    "EDGE_IDENTITY: provider {Provider} presented an agent token but is not first-party - denied (MUST-2)",
+                    providerKey);
+                await _eventSink.EmitSafeAsync(new EdgeSecurityEvent
+                {
+                    EventType = EdgeEventTypes.AuthFailure,
+                    Provider = providerKey,
+                    ExternalSubject = subject,
+                    Result = "deny",
+                    DenyReason = EdgeDenyReasons.AgentProviderNotTrusted,
+                    IpAddress = context.Connection.RemoteIpAddress?.ToString(),
+                    RequestPath = context.Request.Path.Value,
+                    RequestMethod = context.Request.Method
+                }, _logger);
+                context.Response.StatusCode = 403;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(JsonSerializer.Serialize(
+                    ApiResponse<object>.FailureResponse(
+                        "Agent tokens are only accepted from a first-party identity provider",
+                        "AGENT_PROVIDER_NOT_TRUSTED",
+                        requestId: context.TraceIdentifier)));
+                return;
+            }
 
             if (isAgent)
             {
