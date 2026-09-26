@@ -45,6 +45,23 @@ public class OidcProvidersController : ControllerBase
             HttpContext.TraceIdentifier));
     }
 
+    /// <summary>
+    /// BAPert 65307 (b) / QAPert 65303: a provider created or updated through this admin API is never
+    /// first-party, so an http:// discovery URL is refused by MUST-6 at registration. Before the
+    /// per-provider guard that throw then aborted the WHOLE scheme refresh. Give the operator a clean 400
+    /// instead of a row that silently breaks every provider. Mirrors the registrar's AllowHttpMetadata:
+    /// http://localhost (and 127.0.0.1) stays allowed for local development.
+    /// </summary>
+    private static bool IsRejectedDiscoveryUrl(string? discoveryUrl)
+    {
+        if (string.IsNullOrWhiteSpace(discoveryUrl))
+            return false;
+        if (!discoveryUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return !discoveryUrl.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase)
+            && !discoveryUrl.StartsWith("http://127.0.0.1", StringComparison.OrdinalIgnoreCase);
+    }
+
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateOidcProviderRequest request)
     {
@@ -53,6 +70,14 @@ public class OidcProvidersController : ControllerBase
             return Conflict(ApiResponse<object>.FailureResponse(
                 "Provider key already exists", "DUPLICATE_PROVIDER",
                 detail: $"A provider with key '{request.ProviderKey}' already exists",
+                requestId: HttpContext.TraceIdentifier));
+        }
+
+        if (IsRejectedDiscoveryUrl(request.DiscoveryUrl))
+        {
+            return BadRequest(ApiResponse<object>.FailureResponse(
+                "DiscoveryUrl must use HTTPS", "DISCOVERY_URL_NOT_HTTPS",
+                detail: "A non-first-party provider must use an https discovery URL; http is refused by the token validator (MUST-6).",
                 requestId: HttpContext.TraceIdentifier));
         }
 
@@ -106,6 +131,14 @@ public class OidcProvidersController : ControllerBase
     [HttpPut("{key}")]
     public async Task<IActionResult> Update(string key, [FromBody] UpdateOidcProviderRequest request)
     {
+        if (IsRejectedDiscoveryUrl(request.DiscoveryUrl))
+        {
+            return BadRequest(ApiResponse<object>.FailureResponse(
+                "DiscoveryUrl must use HTTPS", "DISCOVERY_URL_NOT_HTTPS",
+                detail: "A non-first-party provider must use an https discovery URL; http is refused by the token validator (MUST-6).",
+                requestId: HttpContext.TraceIdentifier));
+        }
+
         var updated = await _dataService.UpdateProviderAsync(key, p =>
         {
             if (request.DisplayName != null) p.DisplayName = request.DisplayName;
