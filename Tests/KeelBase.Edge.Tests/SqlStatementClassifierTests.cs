@@ -75,6 +75,22 @@ public class SqlStatementClassifierTests
         gotKeyword.Should().Be(keyword);
     }
 
+    // ── PAY-1853 MUST-5 (QAPert 65122, BAPert 65125 promoted it): the SECOND keyword read does not skip
+    // comments, so `DROP/**/SCHEMA s` classifies Schema, not Admin. Agents are still refused (>= Schema),
+    // but a Schema-role USER could drop a schema. The second-keyword read must skip comments.
+
+    [Theory]
+    [InlineData("DROP/**/SCHEMA s", "DROP SCHEMA")]
+    [InlineData("CREATE /* x */ SCHEMA s", "CREATE SCHEMA")]
+    public void MUST5_second_keyword_skips_comments(string sql, string keyword)
+    {
+        var (result, level, gotKeyword) = C(sql);
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok);
+        level.Should().Be(PermissionLevel.Admin,
+            "the effective second keyword is SCHEMA, so this is an Admin statement. SQL: " + sql);
+        gotKeyword.Should().Be(keyword);
+    }
+
     [Fact]
     public void ExplainAnalyzeDelete_classifies_as_Write()
     {
@@ -143,6 +159,34 @@ public class SqlStatementClassifierTests
             "a ';' inside a string/comment/dollar-quote must not read as a second statement. SQL: " + sql);
     }
 
+    // ── PAY-1853 MUST-1 (QAPert 65122, BAPert 65125): the M3 lexer treats a quote as an E-string whenever
+    // the PREVIOUS CHAR is E/e. A keyword ENDING in E right before a quote (LIKE, WHERE, ELSE, CASE, ILIKE)
+    // switches on backslash escapes, so \' swallows the closing quote and the rest of the batch hides
+    // inside a fake string. All three measured Ok (not MultiStatement) at f0373d4, and PROVEN against the
+    // dev-93 Postgres with standard_conforming_strings=on: it ran BOTH statements. The fix: treat it as an
+    // E-string ONLY when the E is its own token (char before E is not [A-Za-z0-9_$], or E at start).
+
+    [Theory]
+    [InlineData("SELECT * FROM t WHERE a LIKE'\\'; DROP TABLE t; --'")]
+    [InlineData("SELECT 1 WHERE'\\'='\\'; DROP TABLE t; --'")]
+    [InlineData("SELECT CASE WHEN true THEN 1 ELSE'\\' END; DROP TABLE t; --'")]
+    public void MUST1_keyword_ending_in_E_does_not_open_an_E_string(string sql)
+    {
+        var (result, _, _) = C(sql);
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.MultiStatement,
+            "the quote here follows a keyword ending in E, not a real E-string prefix, so the ';' " +
+            "separates two statements. SQL: " + sql);
+    }
+
+    // MUST-1 control: a GENUINE E-string (E is its own token) still hides its ';' and must stay Ok.
+    [Fact]
+    public void MUST1_control_real_E_string_stays_Ok()
+    {
+        var (result, _, _) = C("SELECT E'\\';DROP' AS s");
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok,
+            "E'...' here IS a real E-string, so the ';' is inside the literal and must not split the batch");
+    }
+
     // ── PAY-1853 R13: PG NESTS block comments. Expected RED at 88d5a41. ─────────────────────────────
     //
     // `/* /* */ SELECT 1 */ DROP TABLE t` is, in PostgreSQL, ONE nested block comment
@@ -190,6 +234,8 @@ public class SqlStatementClassifierTests
     [InlineData("SELECT * /* c */ INTO t2 FROM t")]
     [InlineData("WITH x AS (SELECT 1) SELECT * INTO t2 FROM x")]
     [InlineData("EXPLAIN ANALYZE SELECT * INTO t2 FROM t")]
+    // QAPert 65122: SkipQuoted does not skip $$...$$, so the ' opens a fake string that swallows the INTO.
+    [InlineData("SELECT $$'$$ INTO t2 FROM t")]
     public void R16_select_into_is_never_Ok_Read(string sql)
     {
         var (result, level, _) = C(sql);
@@ -216,5 +262,23 @@ public class SqlStatementClassifierTests
         result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok);
         level.Should().Be(PermissionLevel.Read,
             "the INTO here is inside a string literal, not a SELECT...INTO table creation");
+    }
+
+    // ── PAY-1853 R10 (NightHawk 65081, re-measured RED by QAPert 65122): a DATA-MODIFYING CTE. The CTE
+    // body contains DELETE, so the statement writes, but FindCteTerminalKeyword looks only at depth 0 and
+    // ignores strings, so the terminal keyword is the outer SELECT = Read. Upstream blocks a leading WITH
+    // today, so this is defence in depth - but it is on the list and it is RED.
+
+    [Theory]
+    [InlineData("WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x")]
+    [InlineData("WITH x AS (UPDATE t SET a = 1 RETURNING *) SELECT * FROM x")]
+    [InlineData("WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x")]
+    public void R10_data_modifying_cte_is_not_Read(string sql)
+    {
+        var (result, level, _) = C(sql);
+
+        (result == SqlStatementClassifier.ClassifyResult.Ok && level == PermissionLevel.Read)
+            .Should().BeFalse(
+                "a data-modifying CTE writes; it must not be Ok+Read. SQL: " + sql);
     }
 }
