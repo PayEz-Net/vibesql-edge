@@ -206,4 +206,48 @@ public class IdentityResolutionMiddlewareTests
         caller.AgentId.Should().Be("agent-9");
         ctx.Response.StatusCode.Should().NotBe(403);
     }
+
+    // ── R14 (NightHawk 65081): recognition ran ONLY when providerKey == the literal "KeelAuth", so an
+    // agents-issuer provider added under any OTHER key resolved every agent as CallerType.User, and with
+    // AllowAllSchemaGovernor DDL was then allowed. The fix keys on the CLAIM VALUE, for ANY provider. ─────
+
+    [Fact]
+    public async Task R14_agent_token_from_a_non_KeelAuth_provider_is_still_an_Agent()
+    {
+        const string agentsKey = "agents-issuer";
+        var provider = new OidcProvider
+        {
+            ProviderKey = agentsKey,
+            Issuer = "https://idp.payez.net/agents",
+            Audience = "acp",
+            IsActive = true,
+            AutoProvision = false,
+            SubjectClaimPath = "sub",
+            RoleClaimPath = "roles",
+            EmailClaimPath = "email"
+        };
+        var identity = new FederatedIdentity
+        {
+            ProviderKey = agentsKey, ExternalSubject = "agent-sub", VibeUserId = 7, IsActive = true
+        };
+        var opts = Options_();
+        var (mw, data, sink) = Build(opts, provider, identity);
+        var ctx = Context(new[]
+        {
+            new Claim("sub", "agent-sub"),
+            new Claim("user_type", "agent"),
+            new Claim("owner_user_id", "42"),
+            new Claim("agent_profile_id", "agent-9")
+        }, authType: "Edge_" + agentsKey);
+        BufferBody(ctx);
+        Wire(ctx, data, sink);
+
+        await mw.InvokeAsync(ctx);
+
+        var caller = ctx.Items["EdgeCaller"] as ResolvedCaller;
+        caller.Should().NotBeNull();
+        caller!.CallerType.Should().Be(CallerType.Agent,
+            "R14: recognition must not be gated on the literal provider key 'KeelAuth'");
+        caller.ProviderKey.Should().Be(agentsKey);
+    }
 }
