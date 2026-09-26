@@ -113,6 +113,36 @@ public class SqlStatementClassifierTests
         result.Should().Be(SqlStatementClassifier.ClassifyResult.MultiStatement);
     }
 
+    // ── PAY-1853 R5 (NightHawk 65081 M3): a QUOTE inside a COMMENT used to fool the multi-statement
+    // scanner. The old ContainsMultiStatement tracked '...' and "..." but ignored -- and /* */ comments,
+    // $$ dollar-quotes and E'\'' escapes. So an odd quote in a comment flipped the in-string state and
+    // swallowed the ';', and `SELECT 1 -- '  ; DROP TABLE t -- '` classified a single SELECT (Read) while
+    // Npgsql ran BOTH statements. DotNetPert's M3 real lexer should make every shape below MultiStatement.
+
+    [Theory]
+    [InlineData("SELECT 1 -- '\n; DROP TABLE t -- '")]
+    [InlineData("SELECT 1 /* ' */ ; DROP TABLE t /* ' */")]
+    [InlineData("SELECT $$;$$ AS s; DROP TABLE t")]
+    [InlineData("SELECT E'\\';' AS s; DROP TABLE t")]
+    public void R5_quote_in_comment_or_quote_form_cannot_hide_a_second_statement(string sql)
+    {
+        var (result, _, _) = C(sql);
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.MultiStatement,
+            "the ';' separates two statements once comments/quoting are lexed correctly. SQL: " + sql);
+    }
+
+    // Over-block control for R5: a ';' INSIDE a string literal or comment is not a statement separator.
+    [Theory]
+    [InlineData("SELECT 'a;b' AS s")]
+    [InlineData("SELECT 1 -- ; not a statement")]
+    [InlineData("SELECT $$a;b$$ AS s")]
+    public void R5_control_semicolon_inside_quoting_is_not_multi_statement(string sql)
+    {
+        var (result, _, _) = C(sql);
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok,
+            "a ';' inside a string/comment/dollar-quote must not read as a second statement. SQL: " + sql);
+    }
+
     // ── PAY-1853 R13: PG NESTS block comments. Expected RED at 88d5a41. ─────────────────────────────
     //
     // `/* /* */ SELECT 1 */ DROP TABLE t` is, in PostgreSQL, ONE nested block comment
