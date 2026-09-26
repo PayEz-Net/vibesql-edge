@@ -220,6 +220,12 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
 
                     var jwtOptions = new JwtBearerOptions
                     {
+                        // BAPert 65328 item 1 / QAPert 65324 run 3: JwtBearer DEFAULTS MapInboundClaims=true,
+                        // which RENAMES standard JWT claims when it builds the principal (sub ->
+                        // .../nameidentifier, roles -> .../role, email -> .../emailaddress). ClaimExtractor
+                        // matches the provider's RAW paths ('sub','roles','email'), so with the default every
+                        // caller 401s SUBJECT_MISSING and roles/email resolve to nothing. Keep the raw names.
+                        MapInboundClaims = false,
                         Authority = provider.DiscoveryUrl.EndsWith("/.well-known/openid-configuration")
                             ? provider.DiscoveryUrl[..provider.DiscoveryUrl.LastIndexOf("/.well-known/openid-configuration", StringComparison.Ordinal)]
                             : provider.Issuer,

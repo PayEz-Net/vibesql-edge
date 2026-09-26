@@ -73,6 +73,12 @@ builder.Services.AddAuthentication(options =>
 })
 .AddJwtBearer("FallbackReject", options =>
 {
+    // Swept for BAPert 65328 item 3 (the duplicate-pattern miss). This is the only OTHER JwtBearer
+    // registration in KeelBase.Edge besides the dynamic schemes. MapInboundClaims is deliberately NOT
+    // set here: this scheme never produces a principal - OnMessageReceived calls NoResult() so it always
+    // fails with no result - so JwtBearer's MapInboundClaims default cannot rename a claim that is never
+    // built and no ClaimExtractor path reads it. The dynamic schemes, which DO authenticate, set
+    // MapInboundClaims=false in DynamicSchemeRegistrar.
     options.Events = new JwtBearerEvents
     {
         OnMessageReceived = context =>
