@@ -264,6 +264,30 @@ public class SqlStatementClassifierTests
             "the INTO here is inside a string literal, not a SELECT...INTO table creation");
     }
 
+    // BAPert 65119: sweep the OTHER wrappers the same effective-statement resolution feeds.
+    // (a) A parenthesised SELECT...INTO. Must not be Ok+Read (Unrecognized is acceptable - it is refused).
+    // (b) CREATE TABLE ... AS SELECT: a table-creating statement; must already be Schema (positive control).
+    [Theory]
+    [InlineData("(SELECT * INTO t2 FROM t)")]
+    [InlineData("EXPLAIN (FORMAT JSON) SELECT * INTO t2 FROM t")]
+    public void R16_other_wrappers_never_yield_Ok_Read(string sql)
+    {
+        var (result, level, _) = C(sql);
+        (result == SqlStatementClassifier.ClassifyResult.Ok && level == PermissionLevel.Read)
+            .Should().BeFalse("a wrapped SELECT...INTO still creates a table. SQL: " + sql);
+    }
+
+    [Theory]
+    [InlineData("CREATE TABLE t2 AS SELECT * FROM t", "CREATE")]
+    [InlineData("CREATE UNLOGGED TABLE t2 AS SELECT * FROM t", "CREATE")]
+    public void R16_control_create_table_as_is_already_Schema(string sql, string keyword)
+    {
+        var (result, level, gotKeyword) = C(sql);
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok);
+        level.Should().Be(PermissionLevel.Schema, "CREATE ... AS SELECT creates a table. SQL: " + sql);
+        gotKeyword.Should().Be(keyword);
+    }
+
     // ── PAY-1853 R10 (NightHawk 65081, re-measured RED by QAPert 65122): a DATA-MODIFYING CTE. The CTE
     // body contains DELETE, so the statement writes, but FindCteTerminalKeyword looks only at depth 0 and
     // ignores strings, so the terminal keyword is the outer SELECT = Read. Upstream blocks a leading WITH
