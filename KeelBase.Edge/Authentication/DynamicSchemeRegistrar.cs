@@ -6,6 +6,10 @@ using Microsoft.IdentityModel.Tokens;
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Data.Models;
 using KeelBase.Edge.Models;
+// QAPert 65279: ConfigurationManager / OpenIdConnectConfigurationRetriever / HttpDocumentRetriever are
+// the types JwtBearerPostConfigureOptions builds when the options go through the real pipeline.
+using Microsoft.IdentityModel.Protocols;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 
 namespace KeelBase.Edge.Authentication;
 
@@ -222,8 +226,49 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                         AuthenticationType = schemeName
                     },
                     // MUST-6 (BAPert 65125 item 6): http metadata only for a first-party provider.
-                    RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl, provider.IsFirstParty)
+                    RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl, provider.IsFirstParty),
+                    // QAPert 65279: a token-validation failure used to be logged at Information by
+                    // JwtBearerHandler and swallowed by the Microsoft.AspNetCore = Warning override, so Edge
+                    // 401'd silently. Surface it as a Warning with the exception TYPE only - never the token.
+                    Events = new JwtBearerEvents
+                    {
+                        OnAuthenticationFailed = context =>
+                        {
+                            _logger.LogWarning(
+                                "EDGE_AUTH: token validation failed for scheme {Scheme} (issuer {Issuer}): {ErrorType}",
+                                schemeName, provider.Issuer, context.Exception.GetType().Name);
+                            return Task.CompletedTask;
+                        }
+                    }
                 };
+
+                // QAPert 65279 (PRODUCT MUST): an options instance put straight into the cache never passes
+                // through the options factory, so JwtBearerPostConfigureOptions never ran and
+                // Options.ConfigurationManager stayed null. JwtBearerHandler then never loaded the discovery
+                // document or the JWKS, so it validated with no IssuerSigningKeys and 401'd EVERY token from
+                // EVERY provider - silently, because the failure is logged at Information and overridden to
+                // Warning. Run the registered post-configures exactly as the options factory would.
+                // MetadataAddress is already the FULL discovery URL here; PostConfigure uses it verbatim (it
+                // only appends /.well-known/openid-configuration to an Authority), so nothing is double-appended.
+                foreach (var postConfigure in scope.ServiceProvider
+                             .GetServices<IPostConfigureOptions<JwtBearerOptions>>())
+                {
+                    postConfigure.PostConfigure(schemeName, jwtOptions);
+                }
+
+                // Backstop: if no post-configure is registered in some host, still guarantee a metadata
+                // loader, so a correctly configured Edge can never silently stop fetching keys again.
+                if (jwtOptions.ConfigurationManager is null && !string.IsNullOrEmpty(jwtOptions.MetadataAddress))
+                {
+                    jwtOptions.Backchannel ??= new HttpClient();
+                    jwtOptions.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(
+                        jwtOptions.MetadataAddress,
+                        new OpenIdConnectConfigurationRetriever(),
+                        new HttpDocumentRetriever(jwtOptions.Backchannel)
+                        {
+                            RequireHttps = jwtOptions.RequireHttpsMetadata
+                        });
+                }
 
                 optionsCache.TryRemove(schemeName);
                 optionsCache.TryAdd(schemeName, jwtOptions);
