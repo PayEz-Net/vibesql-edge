@@ -16,14 +16,14 @@ namespace KeelBase.Edge.Admin;
 [EnableRateLimiting("admin")]
 public class OidcProvidersController : ControllerBase
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
     private readonly DynamicSchemeRegistrar _registrar;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ISecurityEventSink _eventSink;
     private readonly ILogger<OidcProvidersController> _logger;
 
     public OidcProvidersController(
-        KeelBaseDataService dataService,
+        IKeelBaseDataService dataService,
         DynamicSchemeRegistrar registrar,
         IHttpClientFactory httpClientFactory,
         ISecurityEventSink eventSink,

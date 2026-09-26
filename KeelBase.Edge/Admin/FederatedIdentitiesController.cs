@@ -13,9 +13,9 @@ namespace KeelBase.Edge.Admin;
 [EnableRateLimiting("admin")]
 public class FederatedIdentitiesController : ControllerBase
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
 
-    public FederatedIdentitiesController(KeelBaseDataService dataService)
+    public FederatedIdentitiesController(IKeelBaseDataService dataService)
     {
         _dataService = dataService;
     }

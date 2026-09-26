@@ -5,7 +5,7 @@ using KeelBase.Edge.Data.Models;
 
 namespace KeelBase.Edge.Data;
 
-public class KeelBaseDataService
+public class KeelBaseDataService : IKeelBaseDataService
 {
     private readonly string _connectionString;
     private readonly ILogger<KeelBaseDataService> _logger;

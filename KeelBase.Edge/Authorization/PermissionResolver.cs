@@ -5,10 +5,10 @@ namespace KeelBase.Edge.Authorization;
 
 public class PermissionResolver
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
     private readonly ILogger<PermissionResolver> _logger;
 
-    public PermissionResolver(KeelBaseDataService dataService, ILogger<PermissionResolver> logger)
+    public PermissionResolver(IKeelBaseDataService dataService, ILogger<PermissionResolver> logger)
     {
         _dataService = dataService;
         _logger = logger;

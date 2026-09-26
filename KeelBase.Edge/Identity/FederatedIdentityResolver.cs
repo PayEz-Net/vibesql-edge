@@ -6,11 +6,11 @@ namespace KeelBase.Edge.Identity;
 
 public class FederatedIdentityResolver
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
     private readonly ISecurityEventSink _eventSink;
     private readonly ILogger<FederatedIdentityResolver> _logger;
 
-    public FederatedIdentityResolver(KeelBaseDataService dataService, ISecurityEventSink eventSink, ILogger<FederatedIdentityResolver> logger)
+    public FederatedIdentityResolver(IKeelBaseDataService dataService, ISecurityEventSink eventSink, ILogger<FederatedIdentityResolver> logger)
     {
         _dataService = dataService;
         _eventSink = eventSink;

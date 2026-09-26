@@ -101,7 +101,7 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
         try
         {
             using var scope = _serviceProvider.CreateScope();
-            var dataService = scope.ServiceProvider.GetRequiredService<KeelBaseDataService>();
+            var dataService = scope.ServiceProvider.GetRequiredService<IKeelBaseDataService>();
 
             var bootstrapConfigs = _configuration.GetSection("KeelBase:BootstrapProviders")
                 .Get<BootstrapProviderConfig[]>() ?? [];
@@ -162,7 +162,7 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
         try
         {
             using var scope = _serviceProvider.CreateScope();
-            var dataService = scope.ServiceProvider.GetRequiredService<KeelBaseDataService>();
+            var dataService = scope.ServiceProvider.GetRequiredService<IKeelBaseDataService>();
             var schemeProvider = scope.ServiceProvider.GetRequiredService<IAuthenticationSchemeProvider>();
             var optionsCache = scope.ServiceProvider.GetRequiredService<IOptionsMonitorCache<JwtBearerOptions>>();
 

@@ -10,10 +10,10 @@ namespace KeelBase.Edge.Health;
 [AllowAnonymous]
 public class ProviderHealthCheck : ControllerBase
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
     private readonly IHttpClientFactory _httpClientFactory;
 
-    public ProviderHealthCheck(KeelBaseDataService dataService, IHttpClientFactory httpClientFactory)
+    public ProviderHealthCheck(IKeelBaseDataService dataService, IHttpClientFactory httpClientFactory)
     {
         _dataService = dataService;
         _httpClientFactory = httpClientFactory;

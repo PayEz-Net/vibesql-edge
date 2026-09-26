@@ -65,7 +65,7 @@ public class IdentityResolutionMiddleware
 
         context.Items["EdgeProviderKey"] = providerKey;
 
-        var dataService = context.RequestServices.GetRequiredService<KeelBaseDataService>();
+        var dataService = context.RequestServices.GetRequiredService<IKeelBaseDataService>();
         var resolver = context.RequestServices.GetRequiredService<FederatedIdentityResolver>();
 
         var provider = await dataService.GetProviderByKeyAsync(providerKey);
@@ -242,7 +242,7 @@ public class IdentityResolutionMiddleware
         var random32 = pubKey["kb_pub_".Length..];
         var keyPrefix = random32.Length >= 8 ? random32[..8] : random32;
 
-        var dataService = context.RequestServices.GetRequiredService<KeelBaseDataService>();
+        var dataService = context.RequestServices.GetRequiredService<IKeelBaseDataService>();
         var record = await dataService.GetPublishableKeyByPrefixAsync(keyPrefix);
 
         if (record == null)

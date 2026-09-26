@@ -16,7 +16,7 @@ public class ProxyController : ControllerBase
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IClientCredentialProvider _credentialProvider;
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
     private readonly IConfiguration _configuration;
     private readonly ISecurityEventSink _eventSink;
     private readonly ILogger<ProxyController> _logger;
@@ -24,7 +24,7 @@ public class ProxyController : ControllerBase
     public ProxyController(
         IHttpClientFactory httpClientFactory,
         IClientCredentialProvider credentialProvider,
-        KeelBaseDataService dataService,
+        IKeelBaseDataService dataService,
         IConfiguration configuration,
         ISecurityEventSink eventSink,
         ILogger<ProxyController> logger)

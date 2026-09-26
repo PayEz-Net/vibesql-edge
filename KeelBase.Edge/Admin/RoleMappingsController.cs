@@ -14,9 +14,9 @@ namespace KeelBase.Edge.Admin;
 [EnableRateLimiting("admin")]
 public class RoleMappingsController : ControllerBase
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
 
-    public RoleMappingsController(KeelBaseDataService dataService)
+    public RoleMappingsController(IKeelBaseDataService dataService)
     {
         _dataService = dataService;
     }

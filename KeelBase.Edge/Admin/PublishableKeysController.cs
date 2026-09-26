@@ -14,10 +14,10 @@ namespace KeelBase.Edge.Admin;
 [EnableRateLimiting("admin")]
 public class PublishableKeysController : ControllerBase
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
     private readonly ILogger<PublishableKeysController> _logger;
 
-    public PublishableKeysController(KeelBaseDataService dataService, ILogger<PublishableKeysController> logger)
+    public PublishableKeysController(IKeelBaseDataService dataService, ILogger<PublishableKeysController> logger)
     {
         _dataService = dataService;
         _logger = logger;

@@ -16,12 +16,12 @@ namespace KeelBase.Edge.Admin;
 [EnableRateLimiting("admin")]
 public class CredentialsController : ControllerBase
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
     private readonly IClientCredentialProvider _credentialProvider;
     private readonly ISecurityEventSink _eventSink;
     private readonly ILogger<CredentialsController> _logger;
 
-    public CredentialsController(KeelBaseDataService dataService, IClientCredentialProvider credentialProvider, ISecurityEventSink eventSink, ILogger<CredentialsController> logger)
+    public CredentialsController(IKeelBaseDataService dataService, IClientCredentialProvider credentialProvider, ISecurityEventSink eventSink, ILogger<CredentialsController> logger)
     {
         _dataService = dataService;
         _credentialProvider = credentialProvider;

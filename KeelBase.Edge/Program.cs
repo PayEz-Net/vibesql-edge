@@ -31,6 +31,9 @@ builder.Host.UseSerilog((context, config) =>
 });
 
 builder.Services.AddSingleton<KeelBaseDataService>();
+// PAY-1852 test seam (BAPert 65136): the same singleton is the IKeelBaseDataService implementation,
+// so middleware/controllers depend on the interface and KeelBase.Edge.Tests can substitute a mock.
+builder.Services.AddSingleton<IKeelBaseDataService>(sp => sp.GetRequiredService<KeelBaseDataService>());
 builder.Services.AddSingleton<MultiProviderSelector>();
 builder.Services.AddSingleton<DynamicSchemeRegistrar>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DynamicSchemeRegistrar>());
@@ -192,3 +195,7 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
 app.MapControllers();
 
 app.Run();
+
+// PAY-1852 test seam (BAPert 65136): WebApplicationFactory<Program> in KeelBase.Edge.Tests needs a
+// public Program type. Top-level statements generate an internal one, so declare it explicitly.
+public partial class Program { }

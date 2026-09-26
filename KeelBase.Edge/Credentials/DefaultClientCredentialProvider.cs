@@ -5,13 +5,13 @@ namespace KeelBase.Edge.Credentials;
 
 public class DefaultClientCredentialProvider : IClientCredentialProvider
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
     private readonly IConfiguration _configuration;
     private readonly ILogger<DefaultClientCredentialProvider> _logger;
     private readonly ConcurrentDictionary<string, (string Key, DateTime Expires)> _cache = new();
 
     public DefaultClientCredentialProvider(
-        KeelBaseDataService dataService,
+        IKeelBaseDataService dataService,
         IConfiguration configuration,
         ILogger<DefaultClientCredentialProvider> logger)
     {

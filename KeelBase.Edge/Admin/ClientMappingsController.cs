@@ -14,9 +14,9 @@ namespace KeelBase.Edge.Admin;
 [EnableRateLimiting("admin")]
 public class ClientMappingsController : ControllerBase
 {
-    private readonly KeelBaseDataService _dataService;
+    private readonly IKeelBaseDataService _dataService;
 
-    public ClientMappingsController(KeelBaseDataService dataService)
+    public ClientMappingsController(IKeelBaseDataService dataService)
     {
         _dataService = dataService;
     }
