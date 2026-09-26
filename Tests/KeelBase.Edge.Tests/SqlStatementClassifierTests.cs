@@ -148,17 +148,43 @@ public class SqlStatementClassifierTests
     // so it returns Read, and a Read-only role is allowed to create a table. The upstream QueryValidator
     // checks only the leading keyword too, so the DB grants are the sole backstop. A read-only role must
     // be refused: classify SELECT ... INTO as Schema.
+    //
+    // QAPert 65111: a SINGLE shape lets a string-match fix go green while real bypasses stay open, so this
+    // is a Theory over SIX shapes. Every row must be NOT Ok+Read. The mutant reverts ONLY the SELECT...INTO
+    // branch and all six must go RED - not just row 1.
 
-    [Fact]
-    public void R16_select_into_classifies_as_Schema_not_Read()
+    [Theory]
+    [InlineData("SELECT * INTO t2 FROM t")]
+    [InlineData("select a, b into temp t2 from t")]
+    [InlineData("SELECT *\nINTO UNLOGGED t2 FROM t")]
+    [InlineData("SELECT * /* c */ INTO t2 FROM t")]
+    [InlineData("WITH x AS (SELECT 1) SELECT * INTO t2 FROM x")]
+    [InlineData("EXPLAIN ANALYZE SELECT * INTO t2 FROM t")]
+    public void R16_select_into_is_never_Ok_Read(string sql)
     {
-        var (result, level, _) = C("SELECT * INTO t2 FROM t");
+        var (result, level, _) = C(sql);
 
-        level.Should().NotBe(PermissionLevel.Read,
-            "SELECT ... INTO creates a table; a Read-only role must not be allowed to run it");
+        (result == SqlStatementClassifier.ClassifyResult.Ok && level == PermissionLevel.Read)
+            .Should().BeFalse(
+                "SELECT ... INTO creates a table; a Read-only role must not be able to run it. Offending SQL: " + sql);
+
+        // If the fix classifies it rather than refusing, it must demand Schema.
         if (result == SqlStatementClassifier.ClassifyResult.Ok)
         {
-            level.Should().Be(PermissionLevel.Schema);
+            level.Should().Be(PermissionLevel.Schema, "the effective statement is CREATE TABLE (Schema). Offending SQL: " + sql);
         }
+    }
+
+    // QAPert 65111 OPTIONAL over-block control, NOT a gate: a literal containing the word INTO is not a
+    // SELECT...INTO. Correct behaviour is Read; if a conservative fix refuses it instead, that is
+    // acceptable only if the PR says so. This row pins the DESIRABLE behaviour, so it is allowed to be RED.
+    [Fact]
+    public void R16_control_literal_containing_INTO_stays_Read()
+    {
+        var (result, level, _) = C("SELECT 'put INTO box' AS s");
+
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok);
+        level.Should().Be(PermissionLevel.Read,
+            "the INTO here is inside a string literal, not a SELECT...INTO table creation");
     }
 }
