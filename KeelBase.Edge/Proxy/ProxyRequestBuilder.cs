@@ -33,14 +33,10 @@ public static class ProxyRequestBuilder
         request.Headers.Add("X-Vibe-User-Id", vibeUserId.ToString());
         request.Headers.Add("X-Vibe-Via", viaHeader);
 
-        if (originalRequest.Headers.TryGetValue("Authorization", out var authHeader))
-        {
-            var authValue = authHeader.FirstOrDefault();
-            if (!string.IsNullOrEmpty(authValue))
-            {
-                request.Headers.TryAddWithoutValidation("Authorization", authValue);
-            }
-        }
+        // S6 (NightHawk 65081): do NOT forward the caller's Bearer JWT in HMAC mode. On a dual-lane
+        // upstream (compare PAY-1827) the JWT lane could win over Edge's HMAC identity, so the caller's
+        // own token would decide the identity instead of the one Edge resolved and signed for.
+        // (Removed the old TryAddWithoutValidation("Authorization", ...) block.)
 
         if (bodyBytes != null && bodyBytes.Length > 0)
         {

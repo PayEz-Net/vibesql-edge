@@ -44,10 +44,21 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                 "EDGE_KEELAUTH_CONFIG_INVALID: KeelEdge:KeelAuth is configured but Issuer, Audience and DiscoveryUrl must all be set.");
         }
 
-        if (string.IsNullOrWhiteSpace(keelAuthConfig?.AgentClaim))
+        // M1 (NightHawk 65081): when KeelAuth is configured, a missing AgentClaim used to only log an
+        // Information line, after which agent recognition is off and every agent is treated as a User -
+        // with AllowAllSchemaGovernor, DDL is then ALLOWED. Fail startup instead, like the check above.
+        if (keelAuthConfig != null && keelAuthConfig.IsConfigured && string.IsNullOrWhiteSpace(keelAuthConfig.AgentClaim))
+        {
+            throw new InvalidOperationException(
+                "EDGE_KEELAUTH_CONFIG_INVALID: KeelEdge:KeelAuth is configured but AgentClaim is not set. " +
+                "Without it no token can be recognised as an agent, so agent DDL would not be refused. " +
+                "Set KeelEdge:KeelAuth:AgentClaim (and AgentOwnerClaim) or leave KeelAuth unconfigured.");
+        }
+
+        if (keelAuthConfig == null || !keelAuthConfig.IsConfigured)
         {
             _logger.LogInformation(
-                "EDGE_KEELAUTH: AgentClaim is not configured - agent recognition is off (no token will be treated as an agent).");
+                "EDGE_KEELAUTH: not configured - agent recognition is off (no token will be treated as an agent).");
         }
 
 
@@ -74,6 +85,15 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
     public async Task ForceRefreshAsync()
     {
         await RefreshSchemesAsync();
+    }
+
+    /// <summary>R17 (QAPert 65084): http metadata is allowed when the operator sets the knob, or for localhost.
+    /// This is what lets dev-93 (http://10.0.0.93:32785) and in-cluster Azure validate tokens.</summary>
+    private bool AllowHttpMetadata(string discoveryUrl)
+    {
+        if (_configuration.GetValue("KeelEdge:KeelAuth:RequireHttpsMetadata", true) == false)
+            return true;
+        return discoveryUrl.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task SeedBootstrapProvidersAsync()
@@ -179,7 +199,10 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                         RoleClaimType = provider.RoleClaimPath,
                         AuthenticationType = schemeName
                     },
-                    RequireHttpsMetadata = !provider.DiscoveryUrl.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase)
+                    // R17 (QAPert 65084): HTTPS enforcement was keyed on the literal "http://localhost".
+                    // dev-93's IdP is http://10.0.0.93:32785 and in-cluster Azure is http too, so every
+                    // token was rejected before the walk. Allow http when the knob is set OR for localhost.
+                    RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl)
                 };
 
                 optionsCache.TryRemove(schemeName);

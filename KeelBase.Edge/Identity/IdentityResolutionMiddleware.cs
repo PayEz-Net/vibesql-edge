@@ -148,22 +148,52 @@ public class IdentityResolutionMiddleware
         string? callerUserId = identity.VibeUserId.ToString();
         string? agentId = null;
 
-        if (string.Equals(providerKey, KeelAuthOptions.ProviderKey, StringComparison.Ordinal) &&
-            !string.IsNullOrEmpty(_keelAuth.AgentClaim))
+        // R14 (NightHawk 65081): agent recognition was gated on the LITERAL provider key "KeelAuth", so an
+        // agents-issuer provider added under any other key resolved every agent as CallerType.User, and
+        // with AllowAllSchemaGovernor DDL was then allowed. R15: recognition was presence-only, so a service
+        // token carrying user_type also matched. Recognise on the CLAIM VALUE, for ANY provider.
+        if (!string.IsNullOrEmpty(_keelAuth.AgentClaim))
         {
-            agentId = ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentClaim);
-            if (!string.IsNullOrEmpty(agentId))
+            var agentClaimValue = ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentClaim);
+            var isAgent = !string.IsNullOrEmpty(agentClaimValue) &&
+                          string.Equals(agentClaimValue, _keelAuth.AgentClaimValue, StringComparison.OrdinalIgnoreCase);
+
+            if (isAgent)
             {
                 callerType = CallerType.Agent;
+                // R15: an agent token with NO agent_profile_id is still an Agent - the id is optional.
+                agentId = string.IsNullOrEmpty(_keelAuth.AgentIdClaim)
+                    ? null
+                    : ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentIdClaim);
                 callerUserId = string.IsNullOrEmpty(_keelAuth.AgentOwnerClaim)
                     ? null
                     : ClaimExtractor.ExtractClaim(context.User, _keelAuth.AgentOwnerClaim);
 
-                if (!string.IsNullOrEmpty(_keelAuth.AgentOwnerClaim) && string.IsNullOrEmpty(callerUserId))
+                // S7 (NightHawk 65081): an agent token with no owner claim used to log a warning and proceed
+                // with no X-Keel-User. Deny instead - an ownerless agent has no identity upstream can trust.
+                if (string.IsNullOrEmpty(_keelAuth.AgentOwnerClaim) || string.IsNullOrEmpty(callerUserId))
                 {
                     _logger.LogWarning(
-                        "EDGE_IDENTITY: Agent token for provider {Provider} has no owner claim {OwnerClaim}",
+                        "EDGE_IDENTITY: Agent token for provider {Provider} has no owner claim {OwnerClaim} - denied (S7)",
                         providerKey, _keelAuth.AgentOwnerClaim);
+                    await _eventSink.EmitSafeAsync(new EdgeSecurityEvent
+                    {
+                        EventType = EdgeEventTypes.AuthFailure,
+                        Provider = providerKey,
+                        ExternalSubject = subject,
+                        Result = "deny",
+                        DenyReason = EdgeDenyReasons.AgentOwnerMissing,
+                        IpAddress = context.Connection.RemoteIpAddress?.ToString(),
+                        RequestPath = context.Request.Path.Value,
+                        RequestMethod = context.Request.Method
+                    }, _logger);
+                    context.Response.StatusCode = 403;
+                    context.Response.ContentType = "application/json";
+                    await context.Response.WriteAsync(JsonSerializer.Serialize(
+                        ApiResponse<object>.FailureResponse(
+                            "Agent token has no owning user", "AGENT_OWNER_MISSING",
+                            requestId: context.TraceIdentifier)));
+                    return;
                 }
             }
         }

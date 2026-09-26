@@ -38,6 +38,11 @@ public static class SqlStatementClassifier
         if (ContainsMultiStatement(stripped))
             return (ClassifyResult.MultiStatement, PermissionLevel.None, null);
 
+        // R16 (QAPert 65084): `SELECT ... INTO t2 FROM t` creates a table but the leading keyword is
+        // SELECT, so it used to classify Read. Treat a top-level INTO in a SELECT as Schema (DDL).
+        if (IsSelectInto(stripped))
+            return (ClassifyResult.Ok, PermissionLevel.Schema, "SELECT INTO");
+
         var firstKeyword = GetFirstKeyword(stripped);
         if (string.IsNullOrEmpty(firstKeyword))
             return (ClassifyResult.Unrecognized, PermissionLevel.None, null);
@@ -105,19 +110,21 @@ public static class SqlStatementClassifier
         var i = 0;
         while (i < sql.Length)
         {
+            // skip whitespace
             while (i < sql.Length && char.IsWhiteSpace(sql[i])) i++;
+            if (i >= sql.Length) break;
 
+            // line comment: -- to end of line
             if (i + 1 < sql.Length && sql[i] == '-' && sql[i + 1] == '-')
             {
                 while (i < sql.Length && sql[i] != '\n') i++;
                 continue;
             }
 
+            // block comment: /* ... */, NESTED per Postgres (R13, QAPert 65084)
             if (i + 1 < sql.Length && sql[i] == '/' && sql[i + 1] == '*')
             {
-                i += 2;
-                while (i + 1 < sql.Length && !(sql[i] == '*' && sql[i + 1] == '/')) i++;
-                if (i + 1 < sql.Length) i += 2;
+                i = SkipBlockComment(sql, i);
                 continue;
             }
 
@@ -127,38 +134,166 @@ public static class SqlStatementClassifier
         return i < sql.Length ? sql[i..] : string.Empty;
     }
 
+    /// <summary>Skip a (possibly nested) block comment starting at <paramref name="i"/> (which points at "/*").
+    /// Returns the index just past the matching "*/", or sql.Length if unterminated.</summary>
+    private static int SkipBlockComment(string sql, int i)
+    {
+        var depth = 0;
+        while (i < sql.Length)
+        {
+            if (i + 1 < sql.Length && sql[i] == '/' && sql[i + 1] == '*')
+            {
+                depth++;
+                i += 2;
+                continue;
+            }
+            if (i + 1 < sql.Length && sql[i] == '*' && sql[i + 1] == '/')
+            {
+                depth--;
+                i += 2;
+                if (depth == 0) return i;
+                continue;
+            }
+            i++;
+        }
+        return i;
+    }
+
     private static bool ContainsMultiStatement(string sql)
     {
-        var inSingleQuote = false;
-        var inDoubleQuote = false;
-
-        for (var i = 0; i < sql.Length; i++)
+        var i = 0;
+        while (i < sql.Length)
         {
             var c = sql[i];
 
-            if (c == '\'' && !inDoubleQuote)
+            // line comment
+            if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
             {
-                if (i + 1 < sql.Length && sql[i + 1] == '\'')
-                    { i++; continue; }
-                inSingleQuote = !inSingleQuote;
+                while (i < sql.Length && sql[i] != '\n') i++;
                 continue;
             }
 
-            if (c == '"' && !inSingleQuote)
+            // block comment (nested)
+            if (c == '/' && i + 1 < sql.Length && sql[i + 1] == '*')
             {
-                inDoubleQuote = !inDoubleQuote;
+                i = SkipBlockComment(sql, i);
                 continue;
             }
 
-            if (c == ';' && !inSingleQuote && !inDoubleQuote)
+            // double-quoted identifier: "" is an escaped quote inside
+            if (c == '"')
+            {
+                i++;
+                while (i < sql.Length)
+                {
+                    if (sql[i] == '"' && i + 1 < sql.Length && sql[i + 1] == '"') { i += 2; continue; }
+                    if (sql[i] == '"') { i++; break; }
+                    i++;
+                }
+                continue;
+            }
+
+            // dollar-quoted string: $tag$ ... $tag$ (tag may be empty)
+            if (c == '$')
+            {
+                var tagEnd = i + 1;
+                while (tagEnd < sql.Length && (char.IsLetterOrDigit(sql[tagEnd]) || sql[tagEnd] == '_')) tagEnd++;
+                if (tagEnd < sql.Length && sql[tagEnd] == '$')
+                {
+                    var tag = sql[i..(tagEnd + 1)]; // includes both $...$
+                    var close = sql.IndexOf(tag, tagEnd + 1, StringComparison.Ordinal);
+                    i = close < 0 ? sql.Length : close + tag.Length;
+                    continue;
+                }
+            }
+
+            // single-quoted string, with E'\'' backslash escapes when preceded by E/e
+            if (c == '\'')
+            {
+                var isEString = i > 0 && (sql[i - 1] == 'E' || sql[i - 1] == 'e');
+                i++;
+                while (i < sql.Length)
+                {
+                    if (isEString && sql[i] == '\\' && i + 1 < sql.Length) { i += 2; continue; }
+                    if (sql[i] == '\'' && i + 1 < sql.Length && sql[i + 1] == '\'') { i += 2; continue; }
+                    if (sql[i] == '\'') { i++; break; }
+                    i++;
+                }
+                continue;
+            }
+
+            // multi-statement separator
+            if (c == ';')
             {
                 var rest = sql[(i + 1)..].TrimEnd();
                 if (rest.Length > 0)
                     return true;
             }
+
+            i++;
         }
 
         return false;
+    }
+
+    /// <summary>R16: a top-level INTO in a SELECT (SELECT ... INTO new_table ...). Scans outside strings/comments
+    /// and only at bracket depth 0, so `SELECT * FROM t WHERE x IN (SELECT ...)` is untouched.</summary>
+    private static bool IsSelectInto(string sql)
+    {
+        var firstKeyword = GetFirstKeyword(sql);
+        if (firstKeyword == null || !firstKeyword.Equals("SELECT", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var i = 0;
+        var depth = 0;
+        while (i < sql.Length)
+        {
+            var c = sql[i];
+
+            if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
+            {
+                while (i < sql.Length && sql[i] != '\n') i++;
+                continue;
+            }
+            if (c == '/' && i + 1 < sql.Length && sql[i + 1] == '*')
+            {
+                i = SkipBlockComment(sql, i);
+                continue;
+            }
+            if (c == '"' || c == '\'')
+            {
+                i = SkipQuoted(sql, i, c);
+                continue;
+            }
+            if (c == '(') { depth++; i++; continue; }
+            if (c == ')') { depth--; i++; continue; }
+
+            if (depth == 0 && (c == 'I' || c == 'i'))
+            {
+                var kw = ReadKeywordAt(sql, i);
+                if (kw != null && kw.Equals("INTO", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (kw != null) { i += kw.Length; continue; }
+            }
+
+            i++;
+        }
+
+        return false;
+    }
+
+    private static int SkipQuoted(string sql, int i, char quote)
+    {
+        var isEString = quote == '\'' && i > 0 && (sql[i - 1] == 'E' || sql[i - 1] == 'e');
+        i++;
+        while (i < sql.Length)
+        {
+            if (isEString && sql[i] == '\\' && i + 1 < sql.Length) { i += 2; continue; }
+            if (sql[i] == quote && i + 1 < sql.Length && sql[i + 1] == quote) { i += 2; continue; }
+            if (sql[i] == quote) { i++; break; }
+            i++;
+        }
+        return i;
     }
 
     private static string? GetFirstKeyword(string sql)

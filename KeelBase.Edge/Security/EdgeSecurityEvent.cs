@@ -68,4 +68,8 @@ public static class EdgeDenyReasons
     public const string UnrecognizedStatement = "unrecognized_statement";
     public const string MultiStatementRejected = "multi_statement_rejected";
     public const string AnonNotAllowed = "anon_not_allowed";
+    public const string ProviderUnknown = "provider_unknown";
+    public const string OperationUnclassifiable = "operation_unclassifiable";
+    public const string MalformedSql = "malformed_sql";
+    public const string AgentOwnerMissing = "agent_owner_missing";
 }

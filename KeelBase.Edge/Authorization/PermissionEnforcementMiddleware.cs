@@ -14,6 +14,7 @@ public class PermissionEnforcementMiddleware
 
     private static readonly PermissionLevel SentinelMultiStatement = (PermissionLevel)(-1);
     private static readonly PermissionLevel SentinelUnrecognized = (PermissionLevel)(-2);
+    private static readonly PermissionLevel SentinelMalformed = (PermissionLevel)(-3);
 
     public PermissionEnforcementMiddleware(RequestDelegate next, ILogger<PermissionEnforcementMiddleware> logger, ISecurityEventSink eventSink)
     {
@@ -56,9 +57,16 @@ public class PermissionEnforcementMiddleware
         var providerKey = context.Items["EdgeProviderKey"] as string;
         var roles = context.Items["EdgeRoles"] as List<string> ?? [];
 
+        // S1: fail CLOSED. An authenticated caller with no resolvable provider key must not be proxied.
         if (string.IsNullOrEmpty(providerKey))
         {
-            await _next(context);
+            _logger.LogWarning("EDGE_PERMISSION: authenticated caller with no provider key - denied (S1)");
+            await EmitDeniedAsync(context, providerKey, PermissionLevel.None, "provider_unknown", EdgeDenyReasons.ProviderUnknown);
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse("Could not resolve identity provider", "PROVIDER_UNKNOWN",
+                    requestId: context.TraceIdentifier)));
             return;
         }
 
@@ -68,7 +76,29 @@ public class PermissionEnforcementMiddleware
         var requiredLevel = await ClassifyOperationAsync(context);
         if (requiredLevel == null)
         {
-            await _next(context);
+            // S1: fail CLOSED. A verb/route we cannot classify (HEAD, OPTIONS, custom verbs, an
+            // unknown path shape) must be denied, never forwarded unchecked.
+            _logger.LogWarning("EDGE_PERMISSION: unclassifiable operation {Method} {Path} - denied (S1)",
+                context.Request.Method, path);
+            await EmitDeniedAsync(context, providerKey, permResult.EffectiveLevel, "unclassifiable", EdgeDenyReasons.OperationUnclassifiable);
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse(
+                    "Request could not be classified and is denied by default", "OPERATION_NOT_CLASSIFIED",
+                    requestId: context.TraceIdentifier)));
+            return;
+        }
+
+        if (requiredLevel == SentinelMalformed)
+        {
+            await EmitDeniedAsync(context, providerKey, permResult.EffectiveLevel, "malformed", EdgeDenyReasons.MalformedSql);
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse(
+                    "SQL query could not be read unambiguously", "SQL_MALFORMED",
+                    requestId: context.TraceIdentifier)));
             return;
         }
 
@@ -129,17 +159,35 @@ public class PermissionEnforcementMiddleware
             return;
         }
 
+        // Statement class for the tier counter (S3): set once, read by TierLimitMiddleware. Without this
+        // nothing sets EdgeStatementClass and the per-class limits never trip.
+        context.Items["EdgeStatementClass"] = requiredLevel.Value switch
+        {
+            PermissionLevel.Read => "read",
+            PermissionLevel.Write => "write",
+            PermissionLevel.Schema => "ddl",
+            PermissionLevel.Admin => "admin",
+            _ => "unknown"
+        };
+
         // DDL gate logic added per TS-04
         var caller = ResolvedCallerExtensions.From(context);
         if (caller == null)
         {
-            // If we cannot resolve caller, fallback to existing logic (deny?)
-            await _next(context);
+            // S1: fail CLOSED. If we cannot resolve the caller we must not forward.
+            _logger.LogWarning("EDGE_PERMISSION: caller could not be resolved - denied (S1)");
+            await EmitDeniedAsync(context, providerKey, permResult.EffectiveLevel, "caller_unresolved", EdgeDenyReasons.ProviderUnknown);
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(JsonSerializer.Serialize(
+                ApiResponse<object>.FailureResponse("Caller could not be resolved", "CALLER_UNRESOLVED",
+                    requestId: context.TraceIdentifier)));
             return;
         }
 
-        // Determine if the statement is DDL based on requiredLevel mapping (Schema permission)
-        bool isDdl = requiredLevel == PermissionLevel.Schema;
+        // Determine if the statement is DDL. M4 (NightHawk 65081): this was `== Schema`, so TRUNCATE,
+        // GRANT, REVOKE, DROP SCHEMA and CREATE SCHEMA (all Admin) skipped the agent DDL refusal.
+        bool isDdl = requiredLevel.Value >= PermissionLevel.Schema;
         if (isDdl)
         {
             // Agent not allowed DDL
@@ -223,12 +271,18 @@ public class PermissionEnforcementMiddleware
         var path = context.Request.Path.Value ?? "";
         var method = context.Request.Method.ToUpperInvariant();
 
-        if (method == "POST" && path.EndsWith("/query", StringComparison.OrdinalIgnoreCase))
+        // M5 (NightHawk 65081): normalise the path before matching. POST /v1/query/ (trailing slash)
+        // used to fall through to the method map (POST = Write), so no SQL was classified and a
+        // Write-level agent could send DROP TABLE.
+        var normalised = path.Length > 1 ? path.TrimEnd('/') : path;
+        if (normalised.Length == 0) normalised = "/";
+
+        if (method == "POST" && normalised.EndsWith("/query", StringComparison.OrdinalIgnoreCase))
         {
             return await ClassifySqlFromBodyAsync(context);
         }
 
-        if (path.StartsWith("/v1/schemas", StringComparison.OrdinalIgnoreCase))
+        if (normalised.StartsWith("/v1/schemas", StringComparison.OrdinalIgnoreCase))
             return PermissionLevel.Schema;
 
         return method switch
@@ -250,25 +304,45 @@ public class PermissionEnforcementMiddleware
         var body = await reader.ReadToEndAsync();
         context.Request.Body.Position = 0;
 
+        // M2 (NightHawk 65081): an empty body is MALFORMED, not Read. Previously it returned Read,
+        // which let an unclassifiable request through as a read.
         if (string.IsNullOrWhiteSpace(body))
-            return PermissionLevel.Read;
+            return SentinelMalformed;
 
         string? sql = null;
         try
         {
             using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("sql", out var sqlProp))
-                sql = sqlProp.GetString();
-            else if (doc.RootElement.TryGetProperty("query", out var queryProp))
-                sql = queryProp.GetString();
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return SentinelMalformed;
+
+            // M2: match the field CASE-INSENSITIVELY (upstream binds Sql case-insensitively) and reject
+            // the duplicate-key form {"sql":"SELECT 1","Sql":"DROP TABLE t"} rather than choosing one.
+            var matches = 0;
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (prop.Name.Equals("sql", StringComparison.OrdinalIgnoreCase) ||
+                    prop.Name.Equals("query", StringComparison.OrdinalIgnoreCase))
+                {
+                    matches++;
+                    if (prop.Value.ValueKind == JsonValueKind.String && sql == null)
+                        sql = prop.Value.GetString();
+                    else if (prop.Value.ValueKind != JsonValueKind.String)
+                        return SentinelMalformed;
+                }
+            }
+
+            if (matches != 1)
+                return SentinelMalformed;
         }
         catch
         {
+            // A body that is not JSON at all: classify it as raw SQL text (upstream accepts text/plain).
             sql = body;
         }
 
         if (string.IsNullOrWhiteSpace(sql))
-            return PermissionLevel.Read;
+            return SentinelMalformed;
 
         var (result, level, keyword) = SqlStatementClassifier.Classify(sql);
         context.Items["EdgeSqlKeyword"] = keyword;
