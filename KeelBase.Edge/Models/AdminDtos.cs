@@ -87,8 +87,9 @@ public class CreateRoleMappingRequest
     [JsonPropertyName("denied_statements")]
     public string[]? DeniedStatements { get; set; }
 
-    [JsonPropertyName("allowed_collections")]
-    public string[]? AllowedCollections { get; set; }
+    // S2 (BAPert 65125/65152): allowed_collections is REMOVED from the admin API. It was stored and
+    // editable but enforced nowhere, so an admin who set it got no restriction while believing they
+    // had one. It comes back only with the enforcement.
 
     [JsonPropertyName("description")]
     public string? Description { get; set; }
@@ -102,8 +103,7 @@ public class UpdateRoleMappingRequest
     [JsonPropertyName("denied_statements")]
     public string[]? DeniedStatements { get; set; }
 
-    [JsonPropertyName("allowed_collections")]
-    public string[]? AllowedCollections { get; set; }
+    // S2: allowed_collections removed (see CreateRoleMappingRequest).
 
     [JsonPropertyName("description")]
     public string? Description { get; set; }

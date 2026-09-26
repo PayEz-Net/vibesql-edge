@@ -49,7 +49,6 @@ public class RoleMappingsController : ControllerBase
             ExternalRole = request.ExternalRole,
             VibePermission = request.VibePermission,
             DeniedStatements = request.DeniedStatements,
-            AllowedCollections = request.AllowedCollections,
             Description = request.Description
         };
 
@@ -73,7 +72,6 @@ public class RoleMappingsController : ControllerBase
         {
             if (request.VibePermission != null) m.VibePermission = request.VibePermission;
             if (request.DeniedStatements != null) m.DeniedStatements = request.DeniedStatements;
-            if (request.AllowedCollections != null) m.AllowedCollections = request.AllowedCollections;
             if (request.Description != null) m.Description = request.Description;
         });
 

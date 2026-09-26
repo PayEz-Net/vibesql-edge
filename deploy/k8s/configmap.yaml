@@ -10,3 +10,25 @@ data:
   KeelEdge__TierLimits__DocumentWritesPerDay: "2000"
   KeelEdge__TierLimits__SchemaOpsPerDay: "200"
   KeelEdge__TierLimits__BatchOpsPerDay: "100"
+
+  # KeelAuth (M1/MUST-4: if this section is configured, AgentClaim is REQUIRED or the pod will not
+  # start - agent recognition off means agent DDL is allowed). Values are non-secret; set per host.
+  KeelEdge__KeelAuth__Issuer: ""
+  KeelEdge__KeelAuth__Audience: ""
+  KeelEdge__KeelAuth__DiscoveryUrl: ""
+  KeelEdge__KeelAuth__AgentClaim: ""
+  KeelEdge__KeelAuth__AgentOwnerClaim: ""
+  # AgentIdClaim is optional: an agent token without it is still an agent.
+  KeelEdge__KeelAuth__AgentIdClaim: ""
+  # AgentClaimValue defaults to "agent"; recognised by VALUE, so a service token carrying user_type is
+  # not an agent (R15).
+  KeelEdge__KeelAuth__AgentClaimValue: "agent"
+  # R17/MUST-6: false ONLY on hosts whose KeelAuth discovery is http. It is honoured ONLY for a
+  # first-party provider, so a customer IdP stays https-only regardless.
+  KeelEdge__KeelAuth__RequireHttpsMetadata: "true"
+
+  # Bootstrap providers are non-secret SHAPE; a first-party one (IsFirstParty=true) requires AgentClaim
+  # above or startup fails (MUST-4). Populate the array per host, e.g.
+  #   KeelBase__BootstrapProviders__0__ProviderKey: "KeelAgents"
+  #   KeelBase__BootstrapProviders__0__IsFirstParty: "true"
+  KeelBase__RefreshIntervalMinutes: "30"

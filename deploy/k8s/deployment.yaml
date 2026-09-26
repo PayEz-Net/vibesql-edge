@@ -28,6 +28,11 @@ spec:
                 name: keelbase-edge-config
           # Secrets - never inline in this repo
           env:
+            # S4 (BAPert 65125/65152): NEVER Development. In Development with no admin key ANY
+            # authenticated user is admin (RequireAdminPermissionAttribute), so this must be Production
+            # on every host. The admin API stays broken in prod (fails closed) - PAY-1856.
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Production
             - name: ConnectionStrings__EdgeDb
               valueFrom:
                 secretKeyRef:
@@ -43,11 +48,9 @@ spec:
                 secretKeyRef:
                   name: keelbase-edge-secrets
                   key: KeelBase__UpstreamAuthMode
-            - name: KeelBase__HmacSecret
-              valueFrom:
-                secretKeyRef:
-                  name: keelbase-edge-secrets
-                  key: KeelBase__HmacSecret
+            # S5 (BAPert 65152): KeelBase__HmacSecret is DELETED here. It was mapped but read by no code;
+            # hmac mode signs with the edge_client_credentials row key. KeelBase__ContainerSecret stays
+            # unmapped (UpstreamAuthMode=hmac), so its absence is not a per-request throw.
           livenessProbe:
             httpGet:
               path: /health/live
