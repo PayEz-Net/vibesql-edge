@@ -195,4 +195,37 @@ public class PermissionEnforcementMiddlewareTests
         ctx.Response.StatusCode.Should().NotBe(403);
         ctx.Items["EdgePermission"].Should().Be(KeelBase.Edge.Models.PermissionLevel.Read);
     }
+
+    // ── F3: a USER with a Schema role may CREATE TABLE - proves the agent gate is not a blanket DDL ban ─
+    [Theory]
+    [InlineData("CREATE TABLE t (id int)")]
+    [InlineData("ALTER TABLE t ADD COLUMN x int")]
+    public async Task F3_user_with_schema_role_may_do_ddl(string sql)
+    {
+        var (resolver, _) = Resolver("schema");
+        var sink = new Mock<ISecurityEventSink>();
+        var ctx = Context("POST", "/v1/query", "{\"sql\":\"" + sql + "\"}", CallerType.User);
+        Wire(ctx, resolver);
+
+        await Middleware(sink).InvokeAsync(ctx);
+
+        ctx.Response.StatusCode.Should().NotBe(403,
+            "a signed-in USER with Schema authority is allowed DDL; the refusal is agents-only");
+        ctx.Items["EdgePermission"].Should().Be(PermissionLevel.Schema);
+    }
+
+    // ── F3 control: the SAME DDL from an AGENT is refused (the gate really is agent-specific) ─────────
+    [Fact]
+    public async Task F3_control_same_ddl_from_agent_is_refused()
+    {
+        var (resolver, _) = Resolver("schema");
+        var sink = new Mock<ISecurityEventSink>();
+        var ctx = Context("POST", "/v1/query", "{\"sql\":\"CREATE TABLE t (id int)\"}", CallerType.Agent);
+        Wire(ctx, resolver);
+
+        await Middleware(sink).InvokeAsync(ctx);
+
+        ctx.Response.StatusCode.Should().Be(403);
+        (await Body(ctx)).Should().Contain("DDL_NOT_GRANTED_TO_AGENT");
+    }
 }
