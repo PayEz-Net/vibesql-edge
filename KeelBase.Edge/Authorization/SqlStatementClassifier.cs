@@ -2,6 +2,23 @@ using KeelBase.Edge.Models;
 
 namespace KeelBase.Edge.Authorization;
 
+/// <summary>
+/// The front gate that decides the permission level of a SQL statement.
+///
+/// PAY-1854 round 2 (NightHawk 65130, QAPert 65122, BAPert 65125/65133): three review rounds each
+/// found a fresh bypass in the hand-rolled lexer, so this is a rewrite around ONE tokenizer and ONE
+/// token-boundary rule. The three scanners (the multi-statement check, the E-string rule and the
+/// dollar-quote rule) previously each decided for themselves whether a character was a token
+/// boundary, and drifted apart; they now all read the same <see cref="Tokenize"/> output.
+///
+/// The token-boundary rule, stated once (Postgres 4.1.1: identifiers may contain letters, digits,
+/// underscores and dollar signs after the first character):
+///   - a '$' opens a dollar quote ONLY at a token boundary (previous char is not [A-Za-z0-9_$], or
+///     it is the start of input), and the tag may not start with a digit (so $1$ is not a tag);
+///   - a quote is an E-string ONLY when the E is its own token (the char before it is not
+///     [A-Za-z0-9_$], or it is the start of input). Otherwise a keyword ENDING in E (LIKE, WHERE,
+///     ELSE, CASE, ILIKE) would switch on backslash escapes and swallow a following batch.
+/// </summary>
 public static class SqlStatementClassifier
 {
     private static readonly Dictionary<string, PermissionLevel> KeywordMap = new(StringComparer.OrdinalIgnoreCase)
@@ -33,105 +50,272 @@ public static class SqlStatementClassifier
 
     public static (ClassifyResult Result, PermissionLevel Level, string? Keyword) Classify(string sql)
     {
-        var stripped = StripLeadingComments(sql).TrimStart();
+        var toks = Tokenize(sql);
 
-        if (ContainsMultiStatement(stripped))
+        // A ';' with any token after it is a second statement, whatever hid it (comments, strings,
+        // dollar quotes, E-strings) - the tokenizer has already removed all of those.
+        if (ContainsMultiStatement(toks))
             return (ClassifyResult.MultiStatement, PermissionLevel.None, null);
 
-        // R16 (QAPert 65084): `SELECT ... INTO t2 FROM t` creates a table but the leading keyword is
-        // SELECT, so it used to classify Read. Treat a top-level INTO in a SELECT as Schema (DDL).
-        if (IsSelectInto(stripped))
-            return (ClassifyResult.Ok, PermissionLevel.Schema, "SELECT INTO");
-
-        var firstKeyword = GetFirstKeyword(stripped);
-        if (string.IsNullOrEmpty(firstKeyword))
+        if (toks.Count == 0)
             return (ClassifyResult.Unrecognized, PermissionLevel.None, null);
 
-        if (firstKeyword.Equals("EXPLAIN", StringComparison.OrdinalIgnoreCase))
+        // EXPLAIN [ANALYZE] [VERBOSE] [( options )] <statement>. Unwrap to the inner statement so an
+        // INTO hidden behind a wrapper (R16) is still seen.
+        if (IsIdent(toks[0], "EXPLAIN"))
         {
-            var rest = stripped[firstKeyword.Length..].TrimStart();
-            if (rest.StartsWith("ANALYZE", StringComparison.OrdinalIgnoreCase) ||
-                rest.StartsWith("(", StringComparison.OrdinalIgnoreCase))
+            var i = 1;
+            while (i < toks.Count)
             {
-                var afterOptions = SkipExplainOptions(rest);
-                var innerKeyword = GetFirstKeyword(afterOptions);
-                if (innerKeyword != null && KeywordMap.TryGetValue(innerKeyword, out var innerLevel))
-                    return (ClassifyResult.Ok, innerLevel, innerKeyword);
+                if (IsIdent(toks[i], "ANALYZE") || IsIdent(toks[i], "VERBOSE")) { i++; continue; }
+                if (IsPunct(toks[i], "(")) { i = SkipParens(toks, i); continue; }
+                break;
             }
-            else
-            {
-                var innerKeyword = GetFirstKeyword(rest);
-                if (innerKeyword != null && KeywordMap.TryGetValue(innerKeyword, out var innerLevel))
-                    return (ClassifyResult.Ok, innerLevel, innerKeyword);
-            }
-            return (ClassifyResult.Unrecognized, PermissionLevel.None, "EXPLAIN");
+            return ClassifyFrom(toks, i, "EXPLAIN");
         }
 
-        if (firstKeyword.Equals("WITH", StringComparison.OrdinalIgnoreCase))
-        {
-            var terminalKeyword = FindCteTerminalKeyword(stripped);
-            if (terminalKeyword != null && KeywordMap.TryGetValue(terminalKeyword, out var cteLevel))
-                return (ClassifyResult.Ok, cteLevel, terminalKeyword);
-            return (ClassifyResult.Unrecognized, PermissionLevel.None, "WITH");
-        }
+        return ClassifyFrom(toks, 0, null);
+    }
 
-        if (firstKeyword.Equals("DROP", StringComparison.OrdinalIgnoreCase))
+    private static (ClassifyResult Result, PermissionLevel Level, string? Keyword) ClassifyFrom(List<Tok> toks, int start, string? fallback)
+    {
+        if (start >= toks.Count || toks[start].Kind != TokKind.Ident)
+            return (ClassifyResult.Unrecognized, PermissionLevel.None, fallback);
+
+        // WITH: a CTE list. The statement's class is the MAX level of any keyword in the whole thing
+        // (R10: a DELETE/UPDATE/INSERT inside a CTE body is a write), and a top-level INTO whose
+        // terminal statement is a SELECT is Schema (R16: WITH x AS (...) SELECT ... INTO t2).
+        if (IsIdent(toks[start], "WITH"))
+            return ClassifyWith(toks, start);
+
+        var kw = toks[start].Text;
+        if (!KeywordMap.TryGetValue(kw, out var level))
+            return (ClassifyResult.Unrecognized, PermissionLevel.None, kw);
+
+        // R16: SELECT ... INTO new_table creates a table. INSERT INTO is NOT this (its verb is INSERT
+        // and it is already Write); only a SELECT whose top-level body carries an INTO is DDL.
+        if (kw.Equals("SELECT", StringComparison.OrdinalIgnoreCase) && HasTopLevelInto(toks, start + 1))
+            return (ClassifyResult.Ok, PermissionLevel.Schema, "SELECT INTO");
+
+        if (kw.Equals("DROP", StringComparison.OrdinalIgnoreCase))
         {
-            var rest = stripped[firstKeyword.Length..].TrimStart();
-            var secondKeyword = GetFirstKeyword(rest);
-            if (secondKeyword != null &&
-                (secondKeyword.Equals("SCHEMA", StringComparison.OrdinalIgnoreCase) ||
-                 secondKeyword.Equals("DATABASE", StringComparison.OrdinalIgnoreCase)))
-            {
+            // MUST-5: the second keyword is read from TOKENS, so a comment between DROP and SCHEMA
+            // (DROP/**/SCHEMA) no longer hides the Admin classification.
+            var second = NextIdentText(toks, start + 1);
+            if (second != null && (second.Equals("SCHEMA", StringComparison.OrdinalIgnoreCase)
+                                || second.Equals("DATABASE", StringComparison.OrdinalIgnoreCase)))
                 return (ClassifyResult.Ok, PermissionLevel.Admin, "DROP SCHEMA");
-            }
             return (ClassifyResult.Ok, PermissionLevel.Schema, "DROP");
         }
 
-        if (firstKeyword.Equals("CREATE", StringComparison.OrdinalIgnoreCase))
+        if (kw.Equals("CREATE", StringComparison.OrdinalIgnoreCase))
         {
-            var rest = stripped[firstKeyword.Length..].TrimStart();
-            var secondKeyword = GetFirstKeyword(rest);
-            if (secondKeyword != null &&
-                secondKeyword.Equals("SCHEMA", StringComparison.OrdinalIgnoreCase))
-            {
+            var second = NextIdentText(toks, start + 1);
+            if (second != null && second.Equals("SCHEMA", StringComparison.OrdinalIgnoreCase))
                 return (ClassifyResult.Ok, PermissionLevel.Admin, "CREATE SCHEMA");
+            return (ClassifyResult.Ok, level, kw);
+        }
+
+        return (ClassifyResult.Ok, level, kw);
+    }
+
+    private static (ClassifyResult Result, PermissionLevel Level, string? Keyword) ClassifyWith(List<Tok> toks, int start)
+    {
+        var highest = PermissionLevel.None;
+        string? highestKeyword = null;
+        var hasSelect = false;
+
+        foreach (var t in toks)
+        {
+            if (t.Kind != TokKind.Ident) continue;
+            if (t.Text.Equals("SELECT", StringComparison.OrdinalIgnoreCase)) hasSelect = true;
+            if (KeywordMap.TryGetValue(t.Text, out var lvl) && lvl > highest)
+            {
+                highest = lvl;
+                highestKeyword = t.Text;
             }
         }
 
-        if (KeywordMap.TryGetValue(firstKeyword, out var level))
-            return (ClassifyResult.Ok, level, firstKeyword);
+        // A top-level INTO reachable by a SELECT (WITH ... SELECT ... INTO t2) is DDL.
+        if (hasSelect && highest <= PermissionLevel.Read && HasTopLevelInto(toks, start))
+            return (ClassifyResult.Ok, PermissionLevel.Schema, "SELECT INTO");
 
-        return (ClassifyResult.Unrecognized, PermissionLevel.None, firstKeyword);
+        if (highest == PermissionLevel.None)
+            return (ClassifyResult.Unrecognized, PermissionLevel.None, "WITH");
+
+        // R10: a data-modifying CTE body makes the whole statement a Write even though the terminal
+        // keyword is SELECT. The DML keywords are in KeywordMap, so the max already reflects them.
+        return (ClassifyResult.Ok, highest, highestKeyword ?? "WITH");
     }
 
-    private static string StripLeadingComments(string sql)
+    private static bool ContainsMultiStatement(List<Tok> toks)
     {
+        for (var i = 0; i < toks.Count; i++)
+        {
+            if (toks[i].Kind == TokKind.Punct && toks[i].Text == ";" && i + 1 < toks.Count)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>True when an INTO keyword sits at bracket depth 0 from <paramref name="from"/> (R16).
+    /// Nested subqueries are skipped, so `x IN (SELECT ...)` is untouched.</summary>
+    private static bool HasTopLevelInto(List<Tok> toks, int from)
+    {
+        var depth = 0;
+        for (var i = from; i < toks.Count; i++)
+        {
+            var t = toks[i];
+            if (t.Kind == TokKind.Punct && t.Text == "(") { depth++; continue; }
+            if (t.Kind == TokKind.Punct && t.Text == ")") { depth--; continue; }
+            if (depth == 0 && t.Kind == TokKind.Ident && t.Text.Equals("INTO", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // The tokenizer. Comments and string literals (single, E-string, dollar-quoted, double-quoted)
+    // each become AT MOST ONE token, so a ';' inside any of them cannot be seen as a separator.
+    // -------------------------------------------------------------------------------------------
+
+    private enum TokKind { Ident, Literal, Punct }
+
+    private readonly struct Tok
+    {
+        public readonly TokKind Kind;
+        public readonly string Text;
+        public Tok(TokKind kind, string text) { Kind = kind; Text = text; }
+    }
+
+    private static List<Tok> Tokenize(string sql)
+    {
+        var toks = new List<Tok>();
         var i = 0;
         while (i < sql.Length)
         {
-            // skip whitespace
-            while (i < sql.Length && char.IsWhiteSpace(sql[i])) i++;
-            if (i >= sql.Length) break;
+            var c = sql[i];
 
-            // line comment: -- to end of line
-            if (i + 1 < sql.Length && sql[i] == '-' && sql[i + 1] == '-')
+            if (char.IsWhiteSpace(c)) { i++; continue; }
+
+            // line comment
+            if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
             {
                 while (i < sql.Length && sql[i] != '\n') i++;
                 continue;
             }
 
-            // block comment: /* ... */, NESTED per Postgres (R13, QAPert 65084)
-            if (i + 1 < sql.Length && sql[i] == '/' && sql[i + 1] == '*')
+            // block comment (nested per Postgres)
+            if (c == '/' && i + 1 < sql.Length && sql[i + 1] == '*')
             {
                 i = SkipBlockComment(sql, i);
                 continue;
             }
 
-            break;
-        }
+            // double-quoted identifier
+            if (c == '"')
+            {
+                var start = i;
+                i = SkipDoubleQuoted(sql, i);
+                toks.Add(new Tok(TokKind.Ident, sql[start..i]));
+                continue;
+            }
 
-        return i < sql.Length ? sql[i..] : string.Empty;
+            // single-quoted string; E-string ONLY when the E is its own token (MUST-1)
+            if (c == '\'')
+            {
+                var isE = IsEStringPrefix(sql, i);
+                var start = i;
+                i = SkipSingleQuoted(sql, i, isE);
+                toks.Add(new Tok(TokKind.Literal, sql[start..i]));
+                continue;
+            }
+
+            // dollar quote ONLY at a token boundary and with a non-digit tag (MUST-3)
+            if (c == '$' && IsDollarBoundary(sql, i) && TryDollarQuote(sql, i, out var afterClose))
+            {
+                var start = i;
+                i = afterClose;
+                toks.Add(new Tok(TokKind.Literal, sql[start..i]));
+                continue;
+            }
+
+            // identifier (letters, digits, underscore, and '$' after the first char)
+            if (char.IsLetter(c) || c == '_')
+            {
+                var start = i;
+                i++;
+                while (i < sql.Length && IsIdentChar(sql[i])) i++;
+                toks.Add(new Tok(TokKind.Ident, sql[start..i]));
+                continue;
+            }
+
+            toks.Add(new Tok(TokKind.Punct, c.ToString()));
+            i++;
+        }
+        return toks;
+    }
+
+    private static bool IsIdentChar(char c) => char.IsLetterOrDigit(c) || c == '_' || c == '$';
+
+    /// <summary>MUST-1: the quote at <paramref name="quoteIdx"/> is an E-string only when the
+    /// immediately preceding E/e is its OWN token - i.e. the char before the E is not an identifier
+    /// char (or the E is at the start of input). A keyword ending in E (LIKE, WHERE, ELSE, CASE,
+    /// ILIKE) is therefore NOT an E-string prefix.</summary>
+    private static bool IsEStringPrefix(string sql, int quoteIdx)
+    {
+        var e = quoteIdx - 1;
+        if (e < 0 || (sql[e] != 'E' && sql[e] != 'e')) return false;
+        return e - 1 < 0 || !IsIdentChar(sql[e - 1]);
+    }
+
+    /// <summary>MUST-3: a '$' is a dollar-quote opener only when the previous char is not an
+    /// identifier char (or it is the start of input).</summary>
+    private static bool IsDollarBoundary(string sql, int i) => i == 0 || !IsIdentChar(sql[i - 1]);
+
+    /// <summary>MUST-3: read a $tag$ ... $tag$ dollar quote. The tag may be empty ($$) but may not
+    /// start with a digit ($1$ is a positional parameter, not a quote). Returns the index just past
+    /// the closing tag, or false when this '$' is not a dollar quote.</summary>
+    private static bool TryDollarQuote(string sql, int i, out int afterClose)
+    {
+        afterClose = i;
+        var j = i + 1;
+        var tagStart = j;
+        while (j < sql.Length && (char.IsLetterOrDigit(sql[j]) || sql[j] == '_')) j++;
+        if (j > tagStart && char.IsDigit(sql[tagStart])) return false;
+        if (j >= sql.Length || sql[j] != '$') return false;
+
+        var tag = sql[i..(j + 1)];
+        var close = sql.IndexOf(tag, j + 1, StringComparison.Ordinal);
+        // No closing tag: PG would treat the rest as an open quote; consume to the end so a ';'
+        // hidden inside it is not counted as a separator.
+        afterClose = close < 0 ? sql.Length : close + tag.Length;
+        return true;
+    }
+
+    private static int SkipSingleQuoted(string sql, int i, bool isE)
+    {
+        i++;
+        while (i < sql.Length)
+        {
+            if (isE && sql[i] == '\\' && i + 1 < sql.Length) { i += 2; continue; }
+            if (sql[i] == '\'' && i + 1 < sql.Length && sql[i + 1] == '\'') { i += 2; continue; }
+            if (sql[i] == '\'') { i++; break; }
+            i++;
+        }
+        return i;
+    }
+
+    private static int SkipDoubleQuoted(string sql, int i)
+    {
+        i++;
+        while (i < sql.Length)
+        {
+            if (sql[i] == '"' && i + 1 < sql.Length && sql[i + 1] == '"') { i += 2; continue; }
+            if (sql[i] == '"') { i++; break; }
+            i++;
+        }
+        return i;
     }
 
     /// <summary>Skip a (possibly nested) block comment starting at <paramref name="i"/> (which points at "/*").
@@ -141,12 +325,7 @@ public static class SqlStatementClassifier
         var depth = 0;
         while (i < sql.Length)
         {
-            if (i + 1 < sql.Length && sql[i] == '/' && sql[i + 1] == '*')
-            {
-                depth++;
-                i += 2;
-                continue;
-            }
+            if (i + 1 < sql.Length && sql[i] == '/' && sql[i + 1] == '*') { depth++; i += 2; continue; }
             if (i + 1 < sql.Length && sql[i] == '*' && sql[i + 1] == '/')
             {
                 depth--;
@@ -159,236 +338,31 @@ public static class SqlStatementClassifier
         return i;
     }
 
-    private static bool ContainsMultiStatement(string sql)
-    {
-        var i = 0;
-        while (i < sql.Length)
-        {
-            var c = sql[i];
-
-            // line comment
-            if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
-            {
-                while (i < sql.Length && sql[i] != '\n') i++;
-                continue;
-            }
-
-            // block comment (nested)
-            if (c == '/' && i + 1 < sql.Length && sql[i + 1] == '*')
-            {
-                i = SkipBlockComment(sql, i);
-                continue;
-            }
-
-            // double-quoted identifier: "" is an escaped quote inside
-            if (c == '"')
-            {
-                i++;
-                while (i < sql.Length)
-                {
-                    if (sql[i] == '"' && i + 1 < sql.Length && sql[i + 1] == '"') { i += 2; continue; }
-                    if (sql[i] == '"') { i++; break; }
-                    i++;
-                }
-                continue;
-            }
-
-            // dollar-quoted string: $tag$ ... $tag$ (tag may be empty)
-            if (c == '$')
-            {
-                var tagEnd = i + 1;
-                while (tagEnd < sql.Length && (char.IsLetterOrDigit(sql[tagEnd]) || sql[tagEnd] == '_')) tagEnd++;
-                if (tagEnd < sql.Length && sql[tagEnd] == '$')
-                {
-                    var tag = sql[i..(tagEnd + 1)]; // includes both $...$
-                    var close = sql.IndexOf(tag, tagEnd + 1, StringComparison.Ordinal);
-                    i = close < 0 ? sql.Length : close + tag.Length;
-                    continue;
-                }
-            }
-
-            // single-quoted string, with E'\'' backslash escapes when preceded by E/e
-            if (c == '\'')
-            {
-                var isEString = i > 0 && (sql[i - 1] == 'E' || sql[i - 1] == 'e');
-                i++;
-                while (i < sql.Length)
-                {
-                    if (isEString && sql[i] == '\\' && i + 1 < sql.Length) { i += 2; continue; }
-                    if (sql[i] == '\'' && i + 1 < sql.Length && sql[i + 1] == '\'') { i += 2; continue; }
-                    if (sql[i] == '\'') { i++; break; }
-                    i++;
-                }
-                continue;
-            }
-
-            // multi-statement separator
-            if (c == ';')
-            {
-                var rest = sql[(i + 1)..].TrimEnd();
-                if (rest.Length > 0)
-                    return true;
-            }
-
-            i++;
-        }
-
-        return false;
-    }
-
-    /// <summary>R16: a top-level INTO in a SELECT (SELECT ... INTO new_table ...). Scans outside strings/comments
-    /// and only at bracket depth 0, so `SELECT * FROM t WHERE x IN (SELECT ...)` is untouched.</summary>
-    private static bool IsSelectInto(string sql)
-    {
-        var firstKeyword = GetFirstKeyword(sql);
-        if (firstKeyword == null || !firstKeyword.Equals("SELECT", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var i = 0;
-        var depth = 0;
-        while (i < sql.Length)
-        {
-            var c = sql[i];
-
-            if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
-            {
-                while (i < sql.Length && sql[i] != '\n') i++;
-                continue;
-            }
-            if (c == '/' && i + 1 < sql.Length && sql[i + 1] == '*')
-            {
-                i = SkipBlockComment(sql, i);
-                continue;
-            }
-            if (c == '"' || c == '\'')
-            {
-                i = SkipQuoted(sql, i, c);
-                continue;
-            }
-            if (c == '(') { depth++; i++; continue; }
-            if (c == ')') { depth--; i++; continue; }
-
-            if (depth == 0 && (c == 'I' || c == 'i'))
-            {
-                var kw = ReadKeywordAt(sql, i);
-                if (kw != null && kw.Equals("INTO", StringComparison.OrdinalIgnoreCase))
-                    return true;
-                if (kw != null) { i += kw.Length; continue; }
-            }
-
-            i++;
-        }
-
-        return false;
-    }
-
-    private static int SkipQuoted(string sql, int i, char quote)
-    {
-        var isEString = quote == '\'' && i > 0 && (sql[i - 1] == 'E' || sql[i - 1] == 'e');
-        i++;
-        while (i < sql.Length)
-        {
-            if (isEString && sql[i] == '\\' && i + 1 < sql.Length) { i += 2; continue; }
-            if (sql[i] == quote && i + 1 < sql.Length && sql[i + 1] == quote) { i += 2; continue; }
-            if (sql[i] == quote) { i++; break; }
-            i++;
-        }
-        return i;
-    }
-
-    private static string? GetFirstKeyword(string sql)
-    {
-        var i = 0;
-        while (i < sql.Length && char.IsWhiteSpace(sql[i])) i++;
-        var start = i;
-        while (i < sql.Length && (char.IsLetterOrDigit(sql[i]) || sql[i] == '_')) i++;
-        if (i == start) return null;
-        return sql[start..i];
-    }
-
-    private static string SkipExplainOptions(string rest)
-    {
-        var trimmed = rest.TrimStart();
-        if (trimmed.StartsWith('('))
-        {
-            var depth = 1;
-            var i = 1;
-            while (i < trimmed.Length && depth > 0)
-            {
-                if (trimmed[i] == '(') depth++;
-                else if (trimmed[i] == ')') depth--;
-                i++;
-            }
-            return trimmed[i..].TrimStart();
-        }
-
-        if (trimmed.StartsWith("ANALYZE", StringComparison.OrdinalIgnoreCase))
-        {
-            return trimmed[7..].TrimStart();
-        }
-
-        return trimmed;
-    }
-
-    private static string? FindCteTerminalKeyword(string sql)
+    private static int SkipParens(List<Tok> toks, int i)
     {
         var depth = 0;
-        var i = 0;
-        var foundWith = false;
-
-        while (i < sql.Length)
+        for (; i < toks.Count; i++)
         {
-            while (i < sql.Length && char.IsWhiteSpace(sql[i])) i++;
-
-            if (!foundWith)
-            {
-                var kw = ReadKeywordAt(sql, i);
-                if (kw != null && kw.Equals("WITH", StringComparison.OrdinalIgnoreCase))
-                {
-                    foundWith = true;
-                    i += kw.Length;
-                    continue;
-                }
-                return null;
-            }
-
-            if (i < sql.Length && sql[i] == '(')
-            {
-                depth++;
-                i++;
-                continue;
-            }
-
-            if (i < sql.Length && sql[i] == ')')
+            if (IsPunct(toks[i], "(")) depth++;
+            else if (IsPunct(toks[i], ")"))
             {
                 depth--;
-                i++;
-                continue;
+                if (depth == 0) return i + 1;
             }
-
-            if (depth == 0)
-            {
-                var kw = ReadKeywordAt(sql, i);
-                if (kw != null && KeywordMap.ContainsKey(kw))
-                    return kw;
-                if (kw != null)
-                {
-                    i += kw.Length;
-                    continue;
-                }
-            }
-
-            i++;
         }
-
-        return null;
+        return toks.Count;
     }
 
-    private static string? ReadKeywordAt(string sql, int pos)
+    private static bool IsIdent(Tok t, string value) =>
+        t.Kind == TokKind.Ident && t.Text.Equals(value, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsPunct(Tok t, string value) =>
+        t.Kind == TokKind.Punct && t.Text == value;
+
+    private static string? NextIdentText(List<Tok> toks, int from)
     {
-        if (pos >= sql.Length || !char.IsLetter(sql[pos])) return null;
-        var start = pos;
-        while (pos < sql.Length && (char.IsLetterOrDigit(sql[pos]) || sql[pos] == '_')) pos++;
-        return sql[start..pos];
+        for (var i = from; i < toks.Count; i++)
+            if (toks[i].Kind == TokKind.Ident) return toks[i].Text;
+        return null;
     }
 }
