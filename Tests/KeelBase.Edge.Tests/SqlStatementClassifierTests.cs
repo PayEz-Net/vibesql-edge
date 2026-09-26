@@ -179,12 +179,50 @@ public class SqlStatementClassifierTests
     }
 
     // MUST-1 control: a GENUINE E-string (E is its own token) still hides its ';' and must stay Ok.
+    // Verbatim from QAPert 65122's list (BAPert 65127: the backslash must survive transit; the C# @-string
+    // below carries it). This row is the MUST-1 over-block control.
     [Fact]
     public void MUST1_control_real_E_string_stays_Ok()
     {
         var (result, _, _) = C("SELECT E'\\';DROP' AS s");
         result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok,
             "E'...' here IS a real E-string, so the ';' is inside the literal and must not split the batch");
+    }
+
+    // ── PAY-1853 MUST-3 (NightHawk 65130, BAPert 65133): the multi-statement lexer opens a DOLLAR QUOTE
+    // at a '$' INSIDE AN IDENTIFIER. Postgres identifiers may contain '$' after the first char, so `a$b$`
+    // is ONE identifier token and the following ';' is a real separator. The lexer treats any '$' as a
+    // possible `$tag$` opener, so it swallows the rest of the batch: both strings below measured NOT multi
+    // at f0373d4, so Edge saw a single SELECT (Read) while Postgres runs every statement.
+    // Fix: a '$' opens a dollar quote ONLY at a token boundary (prev char not [A-Za-z0-9_$], or start),
+    // and a tag may not start with a digit. Same shared boundary helper as MUST-1.
+
+    [Theory]
+    [InlineData("SELECT 1 AS a$b$; DROP TABLE t; SELECT 1 AS c$b$")]
+    [InlineData("SELECT 1 AS a$z$; DROP TABLE t")]
+    public void MUST3_dollar_inside_identifier_does_not_open_a_dollar_quote(string sql)
+    {
+        var (result, _, _) = C(sql);
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.MultiStatement,
+            "a '$' inside an identifier is not a dollar-quote opener, so the ';' separates statements. SQL: " + sql);
+    }
+
+    // MUST-3 control: a REAL dollar quote (opener at a token boundary) still hides its ';' and stays Ok.
+    [Fact]
+    public void MUST3_control_real_dollar_quote_stays_Ok()
+    {
+        var (result, _, _) = C("SELECT $x$;$x$ AS s");
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok,
+            "$x$ here IS a real dollar quote, so the ';' is inside the literal and must not split the batch");
+    }
+
+    // MUST-3 control: in PG a tag may not start with a digit, so $1$ is not a dollar-quote opener.
+    [Fact]
+    public void MUST3_control_digit_tag_is_not_a_dollar_quote()
+    {
+        var (result, _, _) = C("SELECT 1 AS a$1$; DROP TABLE t");
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.MultiStatement,
+            "a tag may not start with a digit, so $1$ opens no quote and the ';' separates statements");
     }
 
     // ── PAY-1853 R13: PG NESTS block comments. Expected RED at 88d5a41. ─────────────────────────────
