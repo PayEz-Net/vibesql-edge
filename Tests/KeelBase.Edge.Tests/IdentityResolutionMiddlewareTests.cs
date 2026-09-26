@@ -67,13 +67,16 @@ public class IdentityResolutionMiddlewareTests
         return (mw, data, sink);
     }
 
-    private static OidcProvider Provider() => new()
+    private static OidcProvider Provider(bool firstParty = true) => new()
     {
         ProviderKey = KeelAuthKey,
         Issuer = "https://idp.payez.net",
         Audience = "acp",
         IsActive = true,
         AutoProvision = false,
+        // MUST-2 (DotNetPert 0f43cb9): agent recognition + the owner claim are honoured only from a
+        // FIRST-PARTY provider. KeelAuth is auto-flagged first-party, so the default fixture is first-party.
+        IsFirstParty = firstParty,
         SubjectClaimPath = "sub",
         RoleClaimPath = "roles",
         EmailClaimPath = "email"
@@ -222,6 +225,7 @@ public class IdentityResolutionMiddlewareTests
             Audience = "acp",
             IsActive = true,
             AutoProvision = false,
+            IsFirstParty = true,
             SubjectClaimPath = "sub",
             RoleClaimPath = "roles",
             EmailClaimPath = "email"
@@ -249,5 +253,71 @@ public class IdentityResolutionMiddlewareTests
         caller!.CallerType.Should().Be(CallerType.Agent,
             "R14: recognition must not be gated on the literal provider key 'KeelAuth'");
         caller.ProviderKey.Should().Be(agentsKey);
+    }
+
+    // ── MUST-2 (DotNetPert 65143/65151): agent recognition AND the owner claim are honoured ONLY from a
+    // FIRST-PARTY provider. Otherwise a tenant-configured customer OIDC provider can mint {user_type:agent,
+    // owner_user_id:<any KeelAuth user>} and Edge asserts that owner upstream (X-Keel-User). ─────────────
+
+    [Fact]
+    public async Task MUST2_customer_provider_agent_owner_is_refused()
+    {
+        const string customerKey = "customer-idp";
+        var provider = new OidcProvider
+        {
+            ProviderKey = customerKey,
+            Issuer = "https://customer.example.com",
+            Audience = "acp",
+            IsActive = true,
+            AutoProvision = false,
+            IsFirstParty = false,                       // a CUSTOMER provider
+            SubjectClaimPath = "sub",
+            RoleClaimPath = "roles",
+            EmailClaimPath = "email"
+        };
+        var identity = new FederatedIdentity
+        {
+            ProviderKey = customerKey, ExternalSubject = "cust-sub", VibeUserId = 5, IsActive = true
+        };
+        var opts = Options_();
+        var (mw, data, sink) = Build(opts, provider, identity);
+        var ctx = Context(new[]
+        {
+            new Claim("sub", "cust-sub"),
+            new Claim("user_type", "agent"),          // forged agent claim
+            new Claim("owner_user_id", "22")          // forged owner (a KeelAuth user id)
+        }, authType: "Edge_" + customerKey);
+        BufferBody(ctx);
+        Wire(ctx, data, sink);
+
+        await mw.InvokeAsync(ctx);
+
+        ctx.Response.StatusCode.Should().Be(403);
+        var body = await ReadBody(ctx);
+        body.Should().Contain("AGENT_PROVIDER_NOT_TRUSTED");
+    }
+
+    // MUST-2 control: the SAME token shape from a FIRST-PARTY provider resolves as Agent with the owner.
+    [Fact]
+    public async Task MUST2_control_first_party_provider_agent_is_trusted()
+    {
+        var opts = Options_();
+        var (mw, data, sink) = Build(opts, Provider(firstParty: true), Identity());
+        var ctx = Context(new[]
+        {
+            new Claim("sub", "subject-1"),
+            new Claim("user_type", "agent"),
+            new Claim("owner_user_id", "22")
+        });
+        BufferBody(ctx);
+        Wire(ctx, data, sink);
+
+        await mw.InvokeAsync(ctx);
+
+        var caller = ctx.Items["EdgeCaller"] as ResolvedCaller;
+        caller.Should().NotBeNull();
+        caller!.CallerType.Should().Be(CallerType.Agent);
+        caller.UserId.Should().Be("22");
+        ctx.Response.StatusCode.Should().NotBe(403);
     }
 }
