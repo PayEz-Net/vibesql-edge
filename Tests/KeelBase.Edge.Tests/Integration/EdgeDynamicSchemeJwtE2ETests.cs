@@ -8,6 +8,7 @@ using FluentAssertions;
 using KeelBase.Edge.Authentication;
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Data.Models;
+using KeelBase.Edge.Identity;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
@@ -341,6 +342,62 @@ public class EdgeDynamicSchemeJwtE2ETests
             "the warning must name the exception type so the next failure is diagnosable");
         warnings.Should().NotContain(w => w.Contains(expired),
             "the warning must NEVER log the token or its claims");
+    }
+
+    [Fact]
+    public async Task R19_a_valid_token_keeps_the_RAW_claim_names_for_the_provider_claim_paths()
+    {
+        // BAPert 65328 item 2 / QAPert 65324 run 3: JwtBearer's DEFAULT MapInboundClaims = true RENAMES
+        // standard JWT claims when building the principal - sub -> .../nameidentifier, roles -> .../role,
+        // email -> .../emailaddress - while ClaimExtractor matches the provider's RAW paths ('sub',
+        // 'roles', 'email'). So every caller 401s SUBJECT_MISSING and roles/email resolve to nothing.
+        // This row asserts the raw names survive, which is what the registrar's MapInboundClaims=false
+        // (and any other scheme with the same default) must produce. RED at 83a9fcc.
+        await using var host = await HostWithRegisteredProviderAsync();
+
+        var token = SignWithClaims(host.BaseUrl, Audience,
+            ("sub", "1022"),
+            ("roles", "admin"),
+            ("email", "qa@example.test"),
+            ("scope", "agent.acp.access"));
+
+        var result = await AuthenticateAsync(host, token);
+        result.Succeeded.Should().BeTrue("the token must authenticate before claim naming can be judged");
+
+        var principal = result.Principal!;
+
+        // The provider row's claim paths are these raw names (SubjectClaimPath 'sub', RoleClaimPath
+        // 'roles', EmailClaimPath 'email'); ClaimExtractor must find them as-is.
+        ClaimExtractor.ExtractClaim(principal, "sub").Should().Be("1022",
+            "sub must stay the raw JWT name - MapInboundClaims=true renames it to the WS-* nameidentifier URI");
+        ClaimExtractor.ExtractClaim(principal, "email").Should().Be("qa@example.test",
+            "email must stay the raw JWT name - MapInboundClaims=true renames it to the WS-* emailaddress URI");
+        ClaimExtractor.ExtractRoles(principal, "roles").Should().Contain("admin",
+            "roles must resolve from the raw 'roles' claim; otherwise a user provider's role mapping finds none");
+
+        // And the raw names must be PRESENT as claim types (the direct statement of the fix).
+        principal.FindFirst("sub").Should().NotBeNull("raw 'sub' must be a claim type on the principal");
+        principal.HasClaim(c => c.Type == "roles").Should().BeTrue("raw 'roles' must be a claim type on the principal");
+        principal.FindFirst("email").Should().NotBeNull("raw 'email' must be a claim type on the principal");
+    }
+
+    private static string SignWithClaims(string issuer, string audience, params (string Type, string Value)[] claims)
+    {
+        var credentials = new SigningCredentials(TestJwtGenerator.SecurityKey, SecurityAlgorithms.RsaSha256)
+        {
+            Key = { KeyId = "test-key-1" }
+        };
+
+        var jwtClaims = claims.Select(c => new Claim(c.Type, c.Value)).ToList();
+        var token = new JwtSecurityToken(
+            issuer: issuer,
+            audience: audience,
+            claims: jwtClaims,
+            notBefore: DateTime.UtcNow.AddMinutes(-1),
+            expires: DateTime.UtcNow.AddMinutes(30),
+            signingCredentials: credentials);
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
     private static string SignExpired(string issuer, string audience, string subject)
