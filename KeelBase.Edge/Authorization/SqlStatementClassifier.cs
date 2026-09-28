@@ -196,12 +196,18 @@ public static class SqlStatementClassifier
         {
             var c = sql[i];
 
-            if (char.IsWhiteSpace(c)) { i++; continue; }
+            // MUST-7: whitespace must be exactly [ \t\n\r\f\v], not char.IsWhiteSpace which includes NBSP
+            if (IsAsciiWhiteSpace(c)) { i++; continue; }
 
-            // line comment
+            // Check for non-ASCII or extended whitespace outside string literals (MUST-7 fail-closed)
+            if (c >= '\x80' || (char.IsWhiteSpace(c) && !IsAsciiWhiteSpace(c)))
+                return new List<Tok> { }; // Return empty to signal Unrecognized
+
+            // line comment - MUST-7: ends at \r OR \n
             if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
             {
-                while (i < sql.Length && sql[i] != '\n') i++;
+                while (i < sql.Length && sql[i] != '\n' && sql[i] != '\r') i++;
+                if (i < sql.Length) i++; // Skip the line terminator
                 continue;
             }
 
@@ -240,8 +246,9 @@ public static class SqlStatementClassifier
                 continue;
             }
 
-            // identifier (letters, digits, underscore, and '$' after the first char)
-            if (char.IsLetter(c) || c == '_')
+            // identifier (ASCII letters, digits, underscore, and '$' after the first char)
+            // MUST-7: only ASCII letters allowed to start an identifier
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')
             {
                 var start = i;
                 i++;
@@ -256,7 +263,13 @@ public static class SqlStatementClassifier
         return toks;
     }
 
-    private static bool IsIdentChar(char c) => char.IsLetterOrDigit(c) || c == '_' || c == '$';
+    /// <summary>MUST-7: only ASCII whitespace - specifically [ \t\n\r\f\v]. Not char.IsWhiteSpace,
+    /// which includes NBSP (U+00A0) and other Unicode spaces.</summary>
+    private static bool IsAsciiWhiteSpace(char c) => c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+
+    /// <summary>MUST-7: identifier characters are ASCII only outside of quoted identifiers.
+    /// Letters means [A-Za-z], and digits means [0-9]. Non-ASCII chars are rejected (fail-closed).</summary>
+    private static bool IsIdentChar(char c) => (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '$';
 
     /// <summary>MUST-1: the quote at <paramref name="quoteIdx"/> is an E-string only when the
     /// immediately preceding E/e is its OWN token - i.e. the char before the E is not an identifier
@@ -275,14 +288,16 @@ public static class SqlStatementClassifier
 
     /// <summary>MUST-3: read a $tag$ ... $tag$ dollar quote. The tag may be empty ($$) but may not
     /// start with a digit ($1$ is a positional parameter, not a quote). Returns the index just past
-    /// the closing tag, or false when this '$' is not a dollar quote.</summary>
+    /// the closing tag, or false when this '$' is not a dollar quote. MUST-7: tag chars must be
+    /// ASCII only.</summary>
     private static bool TryDollarQuote(string sql, int i, out int afterClose)
     {
         afterClose = i;
         var j = i + 1;
         var tagStart = j;
-        while (j < sql.Length && (char.IsLetterOrDigit(sql[j]) || sql[j] == '_')) j++;
-        if (j > tagStart && char.IsDigit(sql[tagStart])) return false;
+        // MUST-7: only ASCII letters, digits, underscore in tags
+        while (j < sql.Length && (((sql[j] >= 'A' && sql[j] <= 'Z') || (sql[j] >= 'a' && sql[j] <= 'z') || (sql[j] >= '0' && sql[j] <= '9')) || sql[j] == '_')) j++;
+        if (j > tagStart && sql[tagStart] >= '0' && sql[tagStart] <= '9') return false;
         if (j >= sql.Length || sql[j] != '$') return false;
 
         var tag = sql[i..(j + 1)];

@@ -343,4 +343,59 @@ public class SqlStatementClassifierTests
             .Should().BeFalse(
                 "a data-modifying CTE writes; it must not be Ok+Read. SQL: " + sql);
     }
+
+    // ── PAY-1854 MUST-7 (QAPert-NightHawk 66461, BAPert 66462): the SQL lexer's character classes
+    // differ from Postgres/Npgsql, allowing a READ-only role to hide DDL/DML in what appears to be
+    // a single READ statement. Edge ends line comments at \n only (not \r), uses char.IsWhiteSpace
+    // (which includes NBSP U+00A0 and other Unicode spaces), and allows non-ASCII identifier chars
+    // via char.IsLetterOrDigit. This allows hiding statements via:
+    //   - P1: bare CR ends a comment in Postgres but not Edge (SELECT 1 --x\r; DROP...)
+    //   - P2: NBSP or non-ASCII in identifier starts a new statement in Postgres (SELECT ... €... ;DROP...)
+    //   - P3: edge case in dollar-quote handling from prior rounds
+    //   - P4: non-ASCII in a dollar-quote tag
+    // Fix (BAPert 66462 option b, fail-closed): reject any char >= 0x80 or extended whitespace
+    // outside string literals and quoted identifiers. Quoted "über" and literals 'café' still pass.
+
+    [Theory]
+    // P1: bare CR ends a comment in Postgres but not in the original Edge code (only stops at \n)
+    [InlineData("SELECT 1 --x\r; DROP TABLE t")]
+    // P2: non-ASCII € character in unquoted identifier context
+    [InlineData("SELECT 1 AS €$b$; DROP TABLE t; SELECT 1 AS €$b$")]
+    // P3: NBSP (U+00A0) before dollar-quote - Postgres treats NBSP as identifier char, Edge (old) as whitespace
+    [InlineData("SELECT 1 AS a $b$; DROP TABLE t; SELECT 1 AS c $b$")]
+    // P4: non-ASCII in a dollar-quote tag name
+    [InlineData("SELECT $€$'$€$; DROP TABLE t; --'")]
+    public void MUST7_non_ASCII_and_CR_hide_second_statements_must_be_detected(string sql)
+    {
+        var (result, level, _) = C(sql);
+
+        (result == SqlStatementClassifier.ClassifyResult.Ok && level == PermissionLevel.Read)
+            .Should().BeFalse(
+                "Edge's character classification differs from Postgres; these statements must NOT be " +
+                "Ok+Read, or a READ-only role can execute hidden DDL/DML. SQL: " + sql);
+    }
+
+    // MUST-7 controls: non-ASCII inside string literals and quoted identifiers must still be Ok.
+    // ASCII space before $b$ is also OK because Postgres also treats it as a dollar-quote opener.
+    [Theory]
+    [InlineData("SELECT 'café'")]  // non-ASCII in string literal
+    [InlineData("SELECT \"über\" FROM t")]  // non-ASCII in quoted identifier
+    [InlineData("SELECT 1 --x\n")]  // normal newline-terminated comment
+    [InlineData("SELECT 1 AS a $b$'content'$b$ FROM t")]  // ASCII space: Postgres also sees $b$ as dollar-quote
+    public void MUST7_control_non_ASCII_in_literals_and_normal_comments_stay_Ok(string sql)
+    {
+        var (result, level, _) = C(sql);
+
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.Ok,
+            "non-ASCII inside string literals and quoted identifiers must still be allowed. SQL: " + sql);
+    }
+
+    // MUST-7 control: multi-statement with newline-terminated comment must still be detected
+    [Fact]
+    public void MUST7_control_comment_followed_by_second_statement_is_MultiStatement()
+    {
+        var (result, _, _) = C("SELECT 1 --x\n; DROP TABLE t");
+        result.Should().Be(SqlStatementClassifier.ClassifyResult.MultiStatement,
+            "the newline ends the comment; the semicolon then separates two statements");
+    }
 }

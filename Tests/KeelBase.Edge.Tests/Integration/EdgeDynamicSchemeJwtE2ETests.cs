@@ -8,6 +8,7 @@ using FluentAssertions;
 using KeelBase.Edge.Authentication;
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Data.Models;
+using KeelBase.Edge.Identity;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
@@ -343,6 +344,62 @@ public class EdgeDynamicSchemeJwtE2ETests
             "the warning must NEVER log the token or its claims");
     }
 
+    [Fact]
+    public async Task R19_a_valid_token_keeps_the_RAW_claim_names_for_the_provider_claim_paths()
+    {
+        // BAPert 65328 item 2 / QAPert 65324 run 3: JwtBearer's DEFAULT MapInboundClaims = true RENAMES
+        // standard JWT claims when building the principal - sub -> .../nameidentifier, roles -> .../role,
+        // email -> .../emailaddress - while ClaimExtractor matches the provider's RAW paths ('sub',
+        // 'roles', 'email'). So every caller 401s SUBJECT_MISSING and roles/email resolve to nothing.
+        // This row asserts the raw names survive, which is what the registrar's MapInboundClaims=false
+        // (and any other scheme with the same default) must produce. RED at 83a9fcc.
+        await using var host = await HostWithRegisteredProviderAsync();
+
+        var token = SignWithClaims(host.BaseUrl, Audience,
+            ("sub", "1022"),
+            ("roles", "admin"),
+            ("email", "qa@example.test"),
+            ("scope", "agent.acp.access"));
+
+        var result = await AuthenticateAsync(host, token);
+        result.Succeeded.Should().BeTrue("the token must authenticate before claim naming can be judged");
+
+        var principal = result.Principal!;
+
+        // The provider row's claim paths are these raw names (SubjectClaimPath 'sub', RoleClaimPath
+        // 'roles', EmailClaimPath 'email'); ClaimExtractor must find them as-is.
+        ClaimExtractor.ExtractClaim(principal, "sub").Should().Be("1022",
+            "sub must stay the raw JWT name - MapInboundClaims=true renames it to the WS-* nameidentifier URI");
+        ClaimExtractor.ExtractClaim(principal, "email").Should().Be("qa@example.test",
+            "email must stay the raw JWT name - MapInboundClaims=true renames it to the WS-* emailaddress URI");
+        ClaimExtractor.ExtractRoles(principal, "roles").Should().Contain("admin",
+            "roles must resolve from the raw 'roles' claim; otherwise a user provider's role mapping finds none");
+
+        // And the raw names must be PRESENT as claim types (the direct statement of the fix).
+        principal.FindFirst("sub").Should().NotBeNull("raw 'sub' must be a claim type on the principal");
+        principal.HasClaim(c => c.Type == "roles").Should().BeTrue("raw 'roles' must be a claim type on the principal");
+        principal.FindFirst("email").Should().NotBeNull("raw 'email' must be a claim type on the principal");
+    }
+
+    private static string SignWithClaims(string issuer, string audience, params (string Type, string Value)[] claims)
+    {
+        var credentials = new SigningCredentials(TestJwtGenerator.SecurityKey, SecurityAlgorithms.RsaSha256)
+        {
+            Key = { KeyId = "test-key-1" }
+        };
+
+        var jwtClaims = claims.Select(c => new Claim(c.Type, c.Value)).ToList();
+        var token = new JwtSecurityToken(
+            issuer: issuer,
+            audience: audience,
+            claims: jwtClaims,
+            notBefore: DateTime.UtcNow.AddMinutes(-1),
+            expires: DateTime.UtcNow.AddMinutes(30),
+            signingCredentials: credentials);
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
     private static string SignExpired(string issuer, string audience, string subject)
     {
         var credentials = new SigningCredentials(TestJwtGenerator.SecurityKey, SecurityAlgorithms.RsaSha256)
@@ -379,4 +436,63 @@ public class EdgeDynamicSchemeJwtE2ETests
 
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
+
+    [Fact]
+    public async Task S10_ValidAlgorithms_pins_asymmetric_algorithms_and_rejects_HMAC()
+    {
+        await using var host = await HostWithRegisteredProviderAsync();
+
+        // S10 (PAY-1854): ValidAlgorithms must pin the asymmetric families and explicitly
+        // reject HMAC and 'none'. This row directly asserts the TokenValidationParameters
+        // configuration, independent of token generation details.
+        // Mutants: (1) add HS256, (2) remove RS512, (3) set ValidAlgorithms=null - all must go RED.
+        var options = host.Monitor.Get(host.Scheme);
+
+        var validAlgorithms = options.TokenValidationParameters?.ValidAlgorithms;
+        validAlgorithms.Should().NotBeNull("ValidAlgorithms must be set (not null)");
+
+        // Assert: contains all nine asymmetric family members (RS*, PS*, ES*)
+        var expectedAlgorithms = new[] { "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512" };
+        foreach (var alg in expectedAlgorithms)
+        {
+            validAlgorithms.Should().Contain(alg,
+                $"ValidAlgorithms must include {alg} (asymmetric family)");
+        }
+
+        // Assert: does NOT contain HMAC or 'none' (symmetric/unsigned algorithms security risk)
+        var forbiddenAlgorithms = new[] { "HS256", "HS384", "HS512", "none" };
+        foreach (var alg in forbiddenAlgorithms)
+        {
+            validAlgorithms.Should().NotContain(alg,
+                $"ValidAlgorithms must NOT include {alg} (symmetric/unsigned, security risk)");
+        }
+
+        // Behavioral test: HS256-signed token must fail authentication
+        // (independent of ValidAlgorithms pinning because the HMAC key won't be in JWKS, but documents the control)
+        var hsToken = SignWithHmacSha256(host.BaseUrl, Audience, "e2e-user");
+        var result = await AuthenticateAsync(host, hsToken);
+        result.Succeeded.Should().BeFalse(
+            "a token signed with HS256 (HMAC) cannot authenticate against RSA public keys");
+    }
+
+    private static string SignWithHmacSha256(string issuer, string audience, string subject)
+    {
+        // Use a simple symmetric key for HMAC signing
+        var key = System.Text.Encoding.UTF8.GetBytes("this-is-a-secret-key-for-hmac-256");
+        var credentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256)
+        {
+            Key = { KeyId = "hmac-key" }
+        };
+
+        var token = new JwtSecurityToken(
+            issuer: issuer,
+            audience: audience,
+            claims: new[] { new Claim("sub", subject) },
+            notBefore: DateTime.UtcNow.AddMinutes(-1),
+            expires: DateTime.UtcNow.AddMinutes(30),
+            signingCredentials: credentials);
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
 }

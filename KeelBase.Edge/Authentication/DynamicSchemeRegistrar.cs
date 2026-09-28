@@ -220,6 +220,12 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
 
                     var jwtOptions = new JwtBearerOptions
                     {
+                        // BAPert 65328 item 1 / QAPert 65324 run 3: JwtBearer DEFAULTS MapInboundClaims=true,
+                        // which RENAMES standard JWT claims when it builds the principal (sub ->
+                        // .../nameidentifier, roles -> .../role, email -> .../emailaddress). ClaimExtractor
+                        // matches the provider's RAW paths ('sub','roles','email'), so with the default every
+                        // caller 401s SUBJECT_MISSING and roles/email resolve to nothing. Keep the raw names.
+                        MapInboundClaims = false,
                         Authority = provider.DiscoveryUrl.EndsWith("/.well-known/openid-configuration")
                             ? provider.DiscoveryUrl[..provider.DiscoveryUrl.LastIndexOf("/.well-known/openid-configuration", StringComparison.Ordinal)]
                             : provider.Issuer,
@@ -234,7 +240,12 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                             ClockSkew = TimeSpan.FromSeconds(provider.ClockSkewSeconds),
                             NameClaimType = provider.SubjectClaimPath,
                             RoleClaimType = provider.RoleClaimPath,
-                            AuthenticationType = schemeName
+                            AuthenticationType = schemeName,
+                            // S10 (PAY-1854): Defence in depth - pinned signing algorithms. Accept all asymmetric
+                            // families (RSA, ECDSA, PSS) to match customer IdP configurations. Reject HMAC and 'none'.
+                            // This defence is redundant with key type checking in IdentityModel (RSA/ECDSA JWKS keys
+                            // cannot be used as HMAC keys), but it is explicit and fail-closed.
+                            ValidAlgorithms = new[] { "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512" }
                         },
                         // MUST-6 (BAPert 65125 item 6): http metadata only for a first-party provider.
                         RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl, provider.IsFirstParty),
