@@ -6,6 +6,10 @@ using Microsoft.IdentityModel.Tokens;
 using KeelBase.Edge.Data;
 using KeelBase.Edge.Data.Models;
 using KeelBase.Edge.Models;
+// QAPert 65279: ConfigurationManager / OpenIdConnectConfigurationRetriever / HttpDocumentRetriever are
+// the types JwtBearerPostConfigureOptions builds when the options go through the real pipeline.
+using Microsoft.IdentityModel.Protocols;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 
 namespace KeelBase.Edge.Authentication;
 
@@ -196,46 +200,110 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
             foreach (var provider in providers)
             {
                 var schemeName = $"Edge_{provider.ProviderKey}";
-                activeSchemes.Add(schemeName);
-                issuerToScheme[provider.Issuer] = schemeName;
 
-                var existing = await schemeProvider.GetSchemeAsync(schemeName);
-                if (existing != null)
-                    continue;
-
-                var jwtOptions = new JwtBearerOptions
+                // BAPert 65307 (a) / QAPert 65303: a throw building ONE provider's options
+                // (JwtBearerPostConfigureOptions throws for http metadata with RequireHttpsMetadata=true -
+                // exactly a customer provider MUST-6 refuses) used to abort the whole refresh via the outer
+                // catch. Nothing after it ran: later providers, the removal loop and UpdateMappings - so a
+                // single bad row meant no provider registered after the next restart, every caller 401'd,
+                // and /health/ready still said 200. Catch PER PROVIDER, skip the bad one, and ALWAYS run
+                // the removal loop and UpdateMappings.
+                try
                 {
-                    Authority = provider.DiscoveryUrl.EndsWith("/.well-known/openid-configuration")
-                        ? provider.DiscoveryUrl[..provider.DiscoveryUrl.LastIndexOf("/.well-known/openid-configuration", StringComparison.Ordinal)]
-                        : provider.Issuer,
-                    MetadataAddress = provider.DiscoveryUrl,
-                    TokenValidationParameters = new TokenValidationParameters
+                    var existing = await schemeProvider.GetSchemeAsync(schemeName);
+                    if (existing != null)
                     {
-                        ValidateIssuer = true,
-                        ValidIssuer = provider.Issuer,
-                        ValidateAudience = true,
-                        ValidAudience = provider.Audience,
-                        ValidateLifetime = true,
-                        ClockSkew = TimeSpan.FromSeconds(provider.ClockSkewSeconds),
-                        NameClaimType = provider.SubjectClaimPath,
-                        RoleClaimType = provider.RoleClaimPath,
-                        AuthenticationType = schemeName
-                    },
-                    // MUST-6 (BAPert 65125 item 6): http metadata only for a first-party provider.
-                    RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl, provider.IsFirstParty)
-                };
+                        activeSchemes.Add(schemeName);
+                        issuerToScheme[provider.Issuer] = schemeName;
+                        continue;
+                    }
 
-                optionsCache.TryRemove(schemeName);
-                optionsCache.TryAdd(schemeName, jwtOptions);
+                    var jwtOptions = new JwtBearerOptions
+                    {
+                        Authority = provider.DiscoveryUrl.EndsWith("/.well-known/openid-configuration")
+                            ? provider.DiscoveryUrl[..provider.DiscoveryUrl.LastIndexOf("/.well-known/openid-configuration", StringComparison.Ordinal)]
+                            : provider.Issuer,
+                        MetadataAddress = provider.DiscoveryUrl,
+                        TokenValidationParameters = new TokenValidationParameters
+                        {
+                            ValidateIssuer = true,
+                            ValidIssuer = provider.Issuer,
+                            ValidateAudience = true,
+                            ValidAudience = provider.Audience,
+                            ValidateLifetime = true,
+                            ClockSkew = TimeSpan.FromSeconds(provider.ClockSkewSeconds),
+                            NameClaimType = provider.SubjectClaimPath,
+                            RoleClaimType = provider.RoleClaimPath,
+                            AuthenticationType = schemeName
+                        },
+                        // MUST-6 (BAPert 65125 item 6): http metadata only for a first-party provider.
+                        RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl, provider.IsFirstParty),
+                        // QAPert 65279: a token-validation failure used to be logged at Information by
+                        // JwtBearerHandler and swallowed by the Microsoft.AspNetCore = Warning override, so Edge
+                        // 401'd silently. Surface it as a Warning with the exception TYPE only - never the token.
+                        Events = new JwtBearerEvents
+                        {
+                            OnAuthenticationFailed = context =>
+                            {
+                                _logger.LogWarning(
+                                    "EDGE_AUTH: token validation failed for scheme {Scheme} (issuer {Issuer}): {ErrorType}",
+                                    schemeName, provider.Issuer, context.Exception.GetType().Name);
+                                return Task.CompletedTask;
+                            }
+                        }
+                    };
 
-                var scheme = new AuthenticationScheme(schemeName, provider.DisplayName,
-                    typeof(JwtBearerHandler));
-                schemeProvider.AddScheme(scheme);
+                    // QAPert 65279 (PRODUCT MUST): an options instance put straight into the cache never passes
+                    // through the options factory, so JwtBearerPostConfigureOptions never ran and
+                    // Options.ConfigurationManager stayed null. JwtBearerHandler then never loaded the discovery
+                    // document or the JWKS, so it validated with no IssuerSigningKeys and 401'd EVERY token from
+                    // EVERY provider - silently, because the failure is logged at Information and overridden to
+                    // Warning. Run the registered post-configures exactly as the options factory would.
+                    // MetadataAddress is already the FULL discovery URL here; PostConfigure uses it verbatim (it
+                    // only appends /.well-known/openid-configuration to an Authority), so nothing is double-appended.
+                    foreach (var postConfigure in scope.ServiceProvider
+                                 .GetServices<IPostConfigureOptions<JwtBearerOptions>>())
+                    {
+                        postConfigure.PostConfigure(schemeName, jwtOptions);
+                    }
 
-                _registeredSchemes.TryAdd(schemeName, 0);
+                    // Backstop: if no post-configure is registered in some host, still guarantee a metadata
+                    // loader, so a correctly configured Edge can never silently stop fetching keys again.
+                    if (jwtOptions.ConfigurationManager is null && !string.IsNullOrEmpty(jwtOptions.MetadataAddress))
+                    {
+                        jwtOptions.Backchannel ??= new HttpClient();
+                        jwtOptions.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(
+                            jwtOptions.MetadataAddress,
+                            new OpenIdConnectConfigurationRetriever(),
+                            new HttpDocumentRetriever(jwtOptions.Backchannel)
+                            {
+                                RequireHttps = jwtOptions.RequireHttpsMetadata
+                            });
+                    }
 
-                _logger.LogInformation("EDGE_SCHEMES: Registered scheme {Scheme} for issuer {Issuer}",
-                    schemeName, provider.Issuer);
+                    optionsCache.TryRemove(schemeName);
+                    optionsCache.TryAdd(schemeName, jwtOptions);
+
+                    var scheme = new AuthenticationScheme(schemeName, provider.DisplayName,
+                        typeof(JwtBearerHandler));
+                    schemeProvider.AddScheme(scheme);
+
+                    _registeredSchemes.TryAdd(schemeName, 0);
+                    activeSchemes.Add(schemeName);
+                    issuerToScheme[provider.Issuer] = schemeName;
+
+                    _logger.LogInformation("EDGE_SCHEMES: Registered scheme {Scheme} for issuer {Issuer}",
+                        schemeName, provider.Issuer);
+                }
+                catch (Exception ex)
+                {
+                    // Skip the bad provider, keep the rest, and never let it enter activeSchemes /
+                    // issuerToScheme - a rejected provider must not be treated as live, and its issuer must
+                    // not be routed to a scheme that was never registered.
+                    _logger.LogError("EDGE_SCHEMES: provider {Key} rejected: {ExceptionType}",
+                        provider.ProviderKey, ex.GetType().Name);
+                    continue;
+                }
             }
 
             foreach (var oldScheme in _registeredSchemes.Keys.Except(activeSchemes).ToList())
