@@ -361,6 +361,8 @@ public class SqlStatementClassifierTests
     [InlineData("SELECT 1 --x\r; DROP TABLE t")]
     // P2: non-ASCII € character in unquoted identifier context
     [InlineData("SELECT 1 AS €$b$; DROP TABLE t; SELECT 1 AS €$b$")]
+    // P3: NBSP (U+00A0) before dollar-quote - Postgres treats NBSP as identifier char, Edge (old) as whitespace
+    [InlineData("SELECT 1 AS a $b$; DROP TABLE t; SELECT 1 AS c $b$")]
     // P4: non-ASCII in a dollar-quote tag name
     [InlineData("SELECT $€$'$€$; DROP TABLE t; --'")]
     public void MUST7_non_ASCII_and_CR_hide_second_statements_must_be_detected(string sql)
@@ -374,10 +376,12 @@ public class SqlStatementClassifierTests
     }
 
     // MUST-7 controls: non-ASCII inside string literals and quoted identifiers must still be Ok.
+    // ASCII space before $b$ is also OK because Postgres also treats it as a dollar-quote opener.
     [Theory]
     [InlineData("SELECT 'café'")]  // non-ASCII in string literal
     [InlineData("SELECT \"über\" FROM t")]  // non-ASCII in quoted identifier
     [InlineData("SELECT 1 --x\n")]  // normal newline-terminated comment
+    [InlineData("SELECT 1 AS a $b$'content'$b$ FROM t")]  // ASCII space: Postgres also sees $b$ as dollar-quote
     public void MUST7_control_non_ASCII_in_literals_and_normal_comments_stay_Ok(string sql)
     {
         var (result, level, _) = C(sql);

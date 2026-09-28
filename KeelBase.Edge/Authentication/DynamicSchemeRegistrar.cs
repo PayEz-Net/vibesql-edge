@@ -241,11 +241,11 @@ public class DynamicSchemeRegistrar : IHostedService, IDisposable
                             NameClaimType = provider.SubjectClaimPath,
                             RoleClaimType = provider.RoleClaimPath,
                             AuthenticationType = schemeName,
-                            // S10 (PAY-1854): Defence in depth - pinned signing algorithms. KeelAuth uses RS256
-                            // (asymmetric), and ES256 is acceptable. HMAC algorithms (HS256, HS384, HS512) are
-                            // rejected. This defence is redundant with key type checking in IdentityModel (RSA JWKS
-                            // keys cannot be used as HMAC keys), but it is explicit and fail-closed.
-                            ValidAlgorithms = new[] { "RS256", "ES256" }
+                            // S10 (PAY-1854): Defence in depth - pinned signing algorithms. Accept all asymmetric
+                            // families (RSA, ECDSA, PSS) to match customer IdP configurations. Reject HMAC and 'none'.
+                            // This defence is redundant with key type checking in IdentityModel (RSA/ECDSA JWKS keys
+                            // cannot be used as HMAC keys), but it is explicit and fail-closed.
+                            ValidAlgorithms = new[] { "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512" }
                         },
                         // MUST-6 (BAPert 65125 item 6): http metadata only for a first-party provider.
                         RequireHttpsMetadata = !AllowHttpMetadata(provider.DiscoveryUrl, provider.IsFirstParty),
