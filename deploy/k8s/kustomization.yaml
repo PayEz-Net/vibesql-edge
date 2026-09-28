@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# secret-template.yaml is deliberately NOT listed: it holds REPLACE_ME placeholders only and must
+# never be applied. Create the real secret out-of-band first, e.g.:
+#   kubectl create secret generic keelbase-edge-secrets -n internal-services \
+#     --from-literal=ConnectionStrings__EdgeDb='...' --from-literal=KeelBase__HmacSecret='...'
+resources:
+  - deployment.yaml
+  - service.yaml
+  - configmap.yaml

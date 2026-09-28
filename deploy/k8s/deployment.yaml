@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keelbase-edge
+  namespace: internal-services
+  labels:
+    app: keelbase-edge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: keelbase-edge
+  template:
+    metadata:
+      labels:
+        app: keelbase-edge
+    spec:
+      containers:
+        - name: keelbase-edge
+          image: $(ACR_REGISTRY)/keelbase-edge:$(IMAGE_TAG)
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5100
+          # Non-secret, environment-independent limits
+          envFrom:
+            - configMapRef:
+                name: keelbase-edge-config
+          # Secrets - never inline in this repo
+          env:
+            # S4 (BAPert 65125/65152): NEVER Development. In Development with no admin key ANY
+            # authenticated user is admin (RequireAdminPermissionAttribute), so this must be Production
+            # on every host. The admin API stays broken in prod (fails closed) - PAY-1856.
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Production
+            - name: ConnectionStrings__EdgeDb
+              valueFrom:
+                secretKeyRef:
+                  name: keelbase-edge-secrets
+                  key: ConnectionStrings__EdgeDb
+            - name: KeelBase__PublicApiUrl
+              valueFrom:
+                secretKeyRef:
+                  name: keelbase-edge-secrets
+                  key: KeelBase__PublicApiUrl
+            - name: KeelBase__UpstreamAuthMode
+              valueFrom:
+                secretKeyRef:
+                  name: keelbase-edge-secrets
+                  key: KeelBase__UpstreamAuthMode
+            # S5 (BAPert 65152): KeelBase__HmacSecret is DELETED here. It was mapped but read by no code;
+            # hmac mode signs with the edge_client_credentials row key. KeelBase__ContainerSecret stays
+            # unmapped (UpstreamAuthMode=hmac), so its absence is not a per-request throw.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 5100
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 5100
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

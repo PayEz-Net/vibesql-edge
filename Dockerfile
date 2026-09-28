@@ -1,23 +1,25 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-COPY Vibe.Edge/Vibe.Edge.csproj Vibe.Edge/
-RUN dotnet restore Vibe.Edge/Vibe.Edge.csproj
+COPY KeelBase.Edge/KeelBase.Edge.csproj KeelBase.Edge/
+RUN dotnet restore KeelBase.Edge/KeelBase.Edge.csproj
 
-COPY Vibe.Edge/ Vibe.Edge/
-RUN dotnet publish Vibe.Edge/Vibe.Edge.csproj -c Release -o /app/publish --no-restore
+COPY KeelBase.Edge/ KeelBase.Edge/
+RUN dotnet publish KeelBase.Edge/KeelBase.Edge.csproj -c Release -o /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 EXPOSE 5100
 
 # Required environment variables:
-#   ConnectionStrings__EdgeDb     - PostgreSQL connection string
-#   VibeEdge__PublicApiUrl        - Upstream VibeSQL Public API URL
-#   VibeEdge__AdminApiKey         - Admin API key for /v1/admin/* endpoints
+#   ConnectionStrings__EdgeDb - PostgreSQL connection string
+#   KeelBase__PublicApiUrl - Upstream Public API URL
+#   KeelBase__UpstreamAuthMode - Auth mode
+#   KeelBase__HmacSecret - HMAC secret
+#   KeelBase__ContainerSecret - Container secret
 
 ENV ASPNETCORE_URLS=http://+:5100
 ENV DOTNET_RUNNING_IN_CONTAINER=true
 
 COPY --from=build /app/publish .
-ENTRYPOINT ["dotnet", "Vibe.Edge.dll"]
+ENTRYPOINT ["dotnet", "KeelBase.Edge.dll"]
